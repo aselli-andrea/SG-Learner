@@ -1,0 +1,27 @@
+# devstack/settings - variabili del plugin DevStack di SG-Learner
+#
+# Caricato da DevStack prima di plugin.sh. Ogni variabile puo' essere
+# sovrascritta nel local.conf.
+
+# Abilita il servizio quando il plugin e' attivato con enable_plugin
+enable_service sg-learner
+
+# Percorsi
+SG_LEARNER_DIR=${SG_LEARNER_DIR:-$DEST/sg-learner}
+SG_LEARNER_CONF_DIR=${SG_LEARNER_CONF_DIR:-/etc/sg-learner}
+SG_LEARNER_CONF=${SG_LEARNER_CONF:-$SG_LEARNER_CONF_DIR/sg-learner.conf}
+SG_LEARNER_DATA_DIR=${SG_LEARNER_DATA_DIR:-$DATA_DIR/sg-learner}
+
+# Utente di servizio in Keystone (progetto "service")
+SG_LEARNER_SERVICE_USER=${SG_LEARNER_SERVICE_USER:-sg-learner}
+
+# Ciclo di controllo del servizio, in secondi
+SG_LEARNER_INTERVAL=${SG_LEARNER_INTERVAL:-30}
+
+# Log delle ACL scritto da ovn-controller
+SG_LEARNER_OVN_LOG=${SG_LEARNER_OVN_LOG:-/var/log/ovn/ovn-controller.log}
+
+# Packet Logging di Neutron (valori minimi indicati dalla documentazione)
+SG_LEARNER_ML2_CONF=${SG_LEARNER_ML2_CONF:-/etc/neutron/plugins/ml2/ml2_conf.ini}
+SG_LEARNER_LOG_RATE_LIMIT=${SG_LEARNER_LOG_RATE_LIMIT:-100}
+SG_LEARNER_LOG_BURST_LIMIT=${SG_LEARNER_LOG_BURST_LIMIT:-25}
