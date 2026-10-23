@@ -114,6 +114,17 @@ class Proposal:
         return "\n".join(lines)
 
 
+def options_from_config(conf):
+    """Parametri del Policy Engine dalla sezione [engine] di un ConfigParser."""
+    options = {}
+    if conf.has_section("engine"):
+        for key in ("public_threshold", "min_connections",
+                    "low_confidence_below"):
+            if conf.has_option("engine", key):
+                options[key] = conf.getint("engine", key)
+    return options
+
+
 def _exclusion_reason(obs):
     if obs.protocol == "udp" and obs.service_port in _DHCP_PORTS:
         return "DHCP, gestito da Neutron"

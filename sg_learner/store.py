@@ -13,17 +13,21 @@ apre la connessione: per il traffico in ingresso e' la porta della VM
 (es. 22 per SSH), per quello in uscita la porta del servizio remoto
 (es. 80 verso il servizio metadati).
 
-Il database contiene anche una piccola tabella chiave/valore usata dal
-servizio per ricordare il proprio stato (ad esempio fin dove ha letto il
-log di OVN), cosi' da riprendere dopo un riavvio.
+Il database contiene anche:
+- la tabella `vms`, con le VM seguite da SG-Learner e il loro stato nel
+  ciclo di vita (osservazione, proposta, approvazione, applicazione);
+- una piccola tabella chiave/valore usata dal servizio per ricordare il
+  proprio stato (ad esempio fin dove ha letto il log di OVN), cosi' da
+  riprendere dopo un riavvio.
 """
 
 import contextlib
 import dataclasses
 import datetime
+import json
 import sqlite3
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 # SQLite tratta i NULL come valori sempre diversi tra loro, quindi non
 # funzionerebbero nella chiave primaria: i campi assenti (porte per ICMP,
@@ -51,6 +55,21 @@ CREATE INDEX IF NOT EXISTS observations_by_last_seen
 CREATE TABLE IF NOT EXISTS state (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS vms (
+    server_id       TEXT PRIMARY KEY,
+    name            TEXT NOT NULL,
+    project_id      TEXT NOT NULL,
+    port_id         TEXT NOT NULL,
+    mac             TEXT NOT NULL,
+    ip              TEXT NOT NULL,
+    state           TEXT NOT NULL,
+    security_groups TEXT NOT NULL,
+    log_ids         TEXT NOT NULL,
+    learn_started   TEXT,
+    learn_until     TEXT,
+    proposal        TEXT,
+    updated_at      TEXT NOT NULL
 );
 """
 
@@ -85,6 +104,25 @@ class Observation:
     last_seen: datetime.datetime
 
 
+@dataclasses.dataclass
+class VmRecord:
+    """Una VM seguita da SG-Learner e il suo stato nel ciclo di vita."""
+
+    server_id: str
+    name: str
+    project_id: str
+    port_id: str
+    mac: str
+    ip: str
+    state: str
+    security_groups: list
+    log_ids: list
+    learn_started: datetime.datetime | None = None
+    learn_until: datetime.datetime | None = None
+    proposal: dict | None = None
+    updated_at: datetime.datetime | None = None
+
+
 def _to_db(value):
     return _NONE if value is None else value
 
@@ -99,6 +137,14 @@ def _ts_to_db(value):
 
 def _ts_from_db(value):
     return datetime.datetime.fromisoformat(value)
+
+
+def _opt_ts_to_db(value):
+    return _ts_to_db(value) if value else None
+
+
+def _opt_ts_from_db(value):
+    return _ts_from_db(value) if value else None
 
 
 class FlowStore:
@@ -214,6 +260,52 @@ class FlowStore:
             count=row["count"],
             first_seen=_ts_from_db(row["first_seen"]),
             last_seen=_ts_from_db(row["last_seen"]),
+        )
+
+    # --- VM seguite (ciclo di vita) ------------------------------------------
+
+    def save_vm(self, vm):
+        """Inserisce o aggiorna una VM. Aggiorna anche updated_at."""
+        vm.updated_at = datetime.datetime.now(datetime.timezone.utc)
+        with self._transaction() as db:
+            db.execute(
+                "INSERT OR REPLACE INTO vms VALUES"
+                " (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (vm.server_id, vm.name, vm.project_id, vm.port_id, vm.mac,
+                 vm.ip, vm.state, json.dumps(vm.security_groups),
+                 json.dumps(vm.log_ids), _opt_ts_to_db(vm.learn_started),
+                 _opt_ts_to_db(vm.learn_until),
+                 json.dumps(vm.proposal) if vm.proposal is not None else None,
+                 _ts_to_db(vm.updated_at)))
+
+    def get_vm(self, name_or_id):
+        """Cerca una VM per ID o per nome. Restituisce None se non c'e'."""
+        row = self._db.execute(
+            "SELECT * FROM vms WHERE server_id = ? OR name = ?"
+            " ORDER BY server_id = ? DESC LIMIT 1",
+            (name_or_id, name_or_id, name_or_id)).fetchone()
+        return self._row_to_vm(row) if row else None
+
+    def list_vms(self, state=None):
+        query, params = "SELECT * FROM vms", []
+        if state is not None:
+            query += " WHERE state = ?"
+            params.append(state)
+        query += " ORDER BY name"
+        return [self._row_to_vm(r) for r in self._db.execute(query, params)]
+
+    @staticmethod
+    def _row_to_vm(row):
+        return VmRecord(
+            server_id=row["server_id"], name=row["name"],
+            project_id=row["project_id"], port_id=row["port_id"],
+            mac=row["mac"], ip=row["ip"], state=row["state"],
+            security_groups=json.loads(row["security_groups"]),
+            log_ids=json.loads(row["log_ids"]),
+            learn_started=_opt_ts_from_db(row["learn_started"]),
+            learn_until=_opt_ts_from_db(row["learn_until"]),
+            proposal=json.loads(row["proposal"]) if row["proposal"] else None,
+            updated_at=_opt_ts_from_db(row["updated_at"]),
         )
 
     # --- Stato del servizio ---------------------------------------------------

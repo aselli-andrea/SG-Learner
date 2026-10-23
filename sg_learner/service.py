@@ -7,8 +7,10 @@ di OVN. Poi, in un ciclo continuo:
 2. ne estrae le connessioni nuove (Flow Collector);
 3. le salva nel database (Flow Store).
 
-A ogni intervallo scrive nel proprio log un riepilogo dell'attivita'.
-I componenti successivi (engine, enforcer, detector) verranno aggiunti qui.
+A ogni intervallo scrive un riepilogo dell'attivita' e fa avanzare il ciclo
+di vita delle VM: per quelle con la finestra di osservazione scaduta genera
+la proposta con il Policy Engine.
+I componenti successivi (enforcer, detector) verranno aggiunti qui.
 """
 
 import argparse
@@ -23,7 +25,8 @@ import time
 import openstack
 
 from sg_learner import __version__
-from sg_learner import collector
+from sg_learner import collector, engine, lifecycle
+from sg_learner.cloud import Cloud
 from sg_learner.follower import LogFollower
 from sg_learner.store import FlowStore
 
@@ -88,6 +91,34 @@ def self_check(conn, ovn_log):
         LOG.warning("Log OVN NON leggibile: %s", ovn_log)
 
 
+def connect_with_retry(conf, ovn_log, should_stop, attempts=30, delay=10,
+                       sleep=time.sleep):
+    """Connessione e controlli di avvio, ripetuti se OpenStack non e' pronto.
+
+    Dopo un riavvio della macchina i servizi DevStack ripartono tutti
+    insieme, e SG-Learner puo' avviarsi prima di Keystone: invece di
+    fermarsi riprova ogni `delay` secondi, per `attempts` volte
+    (5 minuti con i valori predefiniti).
+    Restituisce la connessione, oppure None se il servizio viene fermato.
+    """
+    for attempt in range(1, attempts + 1):
+        try:
+            conn = connect(conf)
+            self_check(conn, ovn_log)
+            return conn
+        except Exception as error:
+            if attempt == attempts:
+                raise
+            LOG.warning("OpenStack non ancora raggiungibile (tentativo %d"
+                        " di %d): %s. Nuovo tentativo tra %d s",
+                        attempt, attempts, error, delay)
+        for _ in range(delay):
+            if should_stop():
+                return None
+            sleep(1)
+    return None
+
+
 class CollectionWorker:
     """Collega LogFollower, Flow Collector e Flow Store."""
 
@@ -144,14 +175,18 @@ def main(argv=None):
 
     LOG.info("SG-Learner %s in avvio (riepilogo ogni %d s)",
              __version__, interval)
-    conn = connect(conf)
-    self_check(conn, ovn_log)
+    conn = connect_with_retry(conf, ovn_log, lambda: stopping)
+    if conn is None:
+        LOG.info("SG-Learner arrestato prima della connessione a OpenStack")
+        return 0
 
     os.makedirs(data_dir, exist_ok=True)
     db_path = os.path.join(data_dir, DB_FILE)
     store = FlowStore(db_path)
     LOG.info("Database: %s", db_path)
     worker = CollectionWorker(LogFollower(ovn_log, store), store)
+    manager = lifecycle.Lifecycle(store, Cloud(conn),
+                                  engine.options_from_config(conf))
 
     next_report = time.monotonic() + interval
     while not stopping:
@@ -162,6 +197,13 @@ def main(argv=None):
             LOG.exception("Errore durante la lettura del log di OVN")
         if time.monotonic() >= next_report:
             worker.report()
+            try:
+                for vm in manager.tick():
+                    LOG.info("Osservazione di %s terminata: proposta con %d"
+                             " regole in attesa di approvazione", vm.name,
+                             len(vm.proposal["rules"]))
+            except Exception:
+                LOG.exception("Errore durante la generazione delle proposte")
             next_report += interval
         time.sleep(poll_interval)
 
