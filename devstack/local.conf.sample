@@ -1,0 +1,31 @@
+# local.conf di esempio per DevStack con il plugin SG-Learner
+#
+# Uso: copiare in devstack/local.conf ed eseguire ./stack.sh
+# Testato su Ubuntu 24.04, singolo nodo, ML2/OVN (default di DevStack).
+# Risorse consigliate: 12 GB di RAM, 6 vCPU, 20 GB di disco.
+
+[[local|localrc]]
+ADMIN_PASSWORD=secret
+DATABASE_PASSWORD=$ADMIN_PASSWORD
+RABBIT_PASSWORD=$ADMIN_PASSWORD
+SERVICE_PASSWORD=$ADMIN_PASSWORD
+
+# Log completo di stack.sh, utile in caso di errori
+LOGFILE=$DEST/logs/stack.sh.log
+
+# Cinder (volumi) non serve al progetto: risparmia RAM e disco
+disable_service c-api c-vol c-sch
+
+# Plugin SG-Learner scaricato da GitHub
+enable_plugin sg-learner https://github.com/aselli-andrea/SG-Learner main
+
+# In sviluppo, per usare una copia locale gia' presente in /opt/stack:
+# enable_plugin sg-learner file:///opt/stack/sg-learner main
+
+# Solo per host ARM (aarch64) senza virtualizzazione annidata, ad esempio
+# DevStack in una VM su Mac Apple Silicon: Nova usa l'emulazione QEMU, e
+# host-passthrough non funziona. Decommentare le quattro righe seguenti.
+#[[post-config|$NOVA_CPU_CONF]]
+#[libvirt]
+#cpu_mode = custom
+#cpu_models = cortex-a57
