@@ -1,12 +1,19 @@
 """Punto di avvio del servizio SG-Learner (eseguito da systemd).
 
-Versione iniziale: legge la configurazione, verifica l'accesso a OpenStack
-e al log di OVN, poi resta attivo segnalando il proprio stato a ogni ciclo.
-I componenti (collector, engine, enforcer, detector) verranno aggiunti qui.
+All'avvio legge la configurazione e verifica l'accesso a OpenStack e al log
+di OVN. Poi, in un ciclo continuo:
+
+1. legge le righe nuove del log di ovn-controller (LogFollower);
+2. ne estrae le connessioni nuove (Flow Collector);
+3. le salva nel database (Flow Store).
+
+A ogni intervallo scrive nel proprio log un riepilogo dell'attivita'.
+I componenti successivi (engine, enforcer, detector) verranno aggiunti qui.
 """
 
 import argparse
 import configparser
+import datetime
 import logging
 import os
 import signal
@@ -16,12 +23,18 @@ import time
 import openstack
 
 from sg_learner import __version__
+from sg_learner import collector
+from sg_learner.follower import LogFollower
+from sg_learner.store import FlowStore
 
 LOG = logging.getLogger("sg_learner")
 
 DEFAULT_CONFIG = "/etc/sg-learner/sg-learner.conf"
 DEFAULT_INTERVAL = 30
+DEFAULT_POLL_INTERVAL = 2
 DEFAULT_OVN_LOG = "/var/log/ovn/ovn-controller.log"
+DEFAULT_DATA_DIR = "/opt/stack/data/sg-learner"
+DB_FILE = "sg-learner.db"
 
 
 def parse_args(argv):
@@ -75,6 +88,36 @@ def self_check(conn, ovn_log):
         LOG.warning("Log OVN NON leggibile: %s", ovn_log)
 
 
+class CollectionWorker:
+    """Collega LogFollower, Flow Collector e Flow Store."""
+
+    def __init__(self, follower, store, dedup_window=60):
+        self.follower = follower
+        self.store = store
+        self.dedup = collector.ConnectionDeduplicator(dedup_window)
+        self.new_connections = 0
+
+    def poll(self):
+        """Legge le righe nuove e salva le connessioni. Restituisce quante."""
+        lines = self.follower.read_new_lines()
+        if not lines:
+            return 0
+        flows = [f for f in collector.parse_lines(lines)
+                 if f.is_connection_start and self.dedup.is_new(f)]
+        saved = self.store.record_many(flows)
+        self.new_connections += saved
+        return saved
+
+    def report(self):
+        """Scrive un riepilogo e azzera il contatore del periodo."""
+        self.dedup.expire(datetime.datetime.now(datetime.timezone.utc))
+        LOG.info("SG-Learner attivo: %d nuove connessioni nell'ultimo"
+                 " intervallo, %d in totale su %d porte di VM",
+                 self.new_connections, self.store.total_connections(),
+                 len(self.store.vm_macs()))
+        self.new_connections = 0
+
+
 def main(argv=None):
     args = parse_args(sys.argv[1:] if argv is None else argv)
     logging.basicConfig(
@@ -84,7 +127,10 @@ def main(argv=None):
 
     conf = load_config(args.config_file)
     interval = conf.getint("DEFAULT", "interval", fallback=DEFAULT_INTERVAL)
+    poll_interval = conf.getint("DEFAULT", "poll_interval",
+                                fallback=DEFAULT_POLL_INTERVAL)
     ovn_log = conf.get("DEFAULT", "ovn_log_file", fallback=DEFAULT_OVN_LOG)
+    data_dir = conf.get("DEFAULT", "data_dir", fallback=DEFAULT_DATA_DIR)
 
     stopping = False
 
@@ -96,17 +142,30 @@ def main(argv=None):
     signal.signal(signal.SIGTERM, _stop)
     signal.signal(signal.SIGINT, _stop)
 
-    LOG.info("SG-Learner %s in avvio (ciclo ogni %d s)", __version__, interval)
+    LOG.info("SG-Learner %s in avvio (riepilogo ogni %d s)",
+             __version__, interval)
     conn = connect(conf)
     self_check(conn, ovn_log)
 
-    while not stopping:
-        LOG.info("SG-Learner attivo")
-        for _ in range(interval):
-            if stopping:
-                break
-            time.sleep(1)
+    os.makedirs(data_dir, exist_ok=True)
+    db_path = os.path.join(data_dir, DB_FILE)
+    store = FlowStore(db_path)
+    LOG.info("Database: %s", db_path)
+    worker = CollectionWorker(LogFollower(ovn_log, store), store)
 
+    next_report = time.monotonic() + interval
+    while not stopping:
+        try:
+            worker.poll()
+        except Exception:
+            # Un errore di lettura non deve fermare il servizio
+            LOG.exception("Errore durante la lettura del log di OVN")
+        if time.monotonic() >= next_report:
+            worker.report()
+            next_report += interval
+        time.sleep(poll_interval)
+
+    store.close()
     LOG.info("SG-Learner arrestato")
     return 0
 
