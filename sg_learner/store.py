@@ -27,7 +27,7 @@ import datetime
 import json
 import sqlite3
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 # SQLite tratta i NULL come valori sempre diversi tra loro, quindi non
 # funzionerebbero nella chiave primaria: i campi assenti (porte per ICMP,
@@ -69,7 +69,9 @@ CREATE TABLE IF NOT EXISTS vms (
     learn_started   TEXT,
     learn_until     TEXT,
     proposal        TEXT,
-    updated_at      TEXT NOT NULL
+    updated_at      TEXT NOT NULL,
+    learned_sg_id   TEXT,
+    enforce_log_ids TEXT NOT NULL DEFAULT '[]'
 );
 """
 
@@ -121,6 +123,8 @@ class VmRecord:
     learn_until: datetime.datetime | None = None
     proposal: dict | None = None
     updated_at: datetime.datetime | None = None
+    learned_sg_id: str | None = None
+    enforce_log_ids: list = dataclasses.field(default_factory=list)
 
 
 def _to_db(value):
@@ -158,8 +162,19 @@ class FlowStore:
             # WAL: le letture (API) non bloccano le scritture (collector)
             self._db.execute("PRAGMA journal_mode=WAL")
         self._db.executescript(_SCHEMA)
+        self._migrate()
         self._db.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
         self._db.commit()
+
+    def _migrate(self):
+        """Aggiorna un database creato da una versione precedente."""
+        columns = {row["name"] for row in
+                   self._db.execute("PRAGMA table_info(vms)")}
+        if "learned_sg_id" not in columns:
+            self._db.execute("ALTER TABLE vms ADD COLUMN learned_sg_id TEXT")
+        if "enforce_log_ids" not in columns:
+            self._db.execute("ALTER TABLE vms ADD COLUMN enforce_log_ids"
+                             " TEXT NOT NULL DEFAULT '[]'")
 
     def close(self):
         self._db.close()
@@ -269,14 +284,18 @@ class FlowStore:
         vm.updated_at = datetime.datetime.now(datetime.timezone.utc)
         with self._transaction() as db:
             db.execute(
-                "INSERT OR REPLACE INTO vms VALUES"
-                " (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT OR REPLACE INTO vms (server_id, name, project_id,"
+                " port_id, mac, ip, state, security_groups, log_ids,"
+                " learn_started, learn_until, proposal, updated_at,"
+                " learned_sg_id, enforce_log_ids)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (vm.server_id, vm.name, vm.project_id, vm.port_id, vm.mac,
                  vm.ip, vm.state, json.dumps(vm.security_groups),
                  json.dumps(vm.log_ids), _opt_ts_to_db(vm.learn_started),
                  _opt_ts_to_db(vm.learn_until),
                  json.dumps(vm.proposal) if vm.proposal is not None else None,
-                 _ts_to_db(vm.updated_at)))
+                 _ts_to_db(vm.updated_at), vm.learned_sg_id,
+                 json.dumps(vm.enforce_log_ids)))
 
     def get_vm(self, name_or_id):
         """Cerca una VM per ID o per nome. Restituisce None se non c'e'."""
@@ -306,6 +325,8 @@ class FlowStore:
             learn_until=_opt_ts_from_db(row["learn_until"]),
             proposal=json.loads(row["proposal"]) if row["proposal"] else None,
             updated_at=_opt_ts_from_db(row["updated_at"]),
+            learned_sg_id=row["learned_sg_id"],
+            enforce_log_ids=json.loads(row["enforce_log_ids"] or "[]"),
         )
 
     # --- Stato del servizio ---------------------------------------------------

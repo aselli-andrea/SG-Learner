@@ -7,6 +7,7 @@ Uso (dopo `source devstack/openrc admin admin`):
     sg-learner proposal generate vm-web      genera subito la proposta
     sg-learner proposal show vm-web          mostra la proposta
     sg-learner proposal approve vm-web       approva la proposta
+    sg-learner rollback vm-web               ripristina i gruppi originali
 
 Il CLI usa le credenziali dell'utente che lo esegue (variabili OS_* di
 openrc): solo chi ha accesso amministrativo a OpenStack puo' usarlo.
@@ -22,6 +23,7 @@ import openstack
 
 from sg_learner import engine, lifecycle
 from sg_learner.cloud import Cloud
+from sg_learner.enforcer import Enforcer
 from sg_learner.store import FlowStore
 
 DEFAULT_CONFIG = "/etc/sg-learner/sg-learner.conf"
@@ -65,6 +67,10 @@ def build_parser():
 
     sub.add_parser("status", help="stato delle VM seguite")
 
+    rollback = sub.add_parser(
+        "rollback", help="ripristina i security group originali")
+    rollback.add_argument("vm", help="nome o ID della VM")
+
     proposal = sub.add_parser("proposal", help="gestione delle proposte")
     proposal_sub = proposal.add_subparsers(dest="action", required=True)
     for action, text in (("generate", "genera subito la proposta"),
@@ -101,6 +107,12 @@ def main(argv=None, conn=None, out=sys.stdout):
         elif args.command == "status":
             print_status(manager.status(), out)
 
+        elif args.command == "rollback":
+            vm = Enforcer(store, cloud).rollback(args.vm)
+            print(f"{vm.name}: ripristinati i security group originali."
+                  " La proposta resta disponibile (stato 'proposed').",
+                  file=out)
+
         elif args.action == "generate":
             vm = manager.generate(args.vm)
             print(vm.proposal["summary"], file=out)
@@ -116,8 +128,8 @@ def main(argv=None, conn=None, out=sys.stdout):
 
         elif args.action == "approve":
             vm = manager.approve(args.vm)
-            print(f"Proposta per {vm.name} approvata: verra' applicata"
-                  " dall'Enforcer.", file=out)
+            print(f"Proposta per {vm.name} approvata: il servizio la"
+                  " applichera' entro 30 secondi.", file=out)
 
     except (lifecycle.LifecycleError, LookupError, ValueError) as error:
         print(f"Errore: {error}", file=sys.stderr)

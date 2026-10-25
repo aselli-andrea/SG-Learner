@@ -9,8 +9,8 @@ di OVN. Poi, in un ciclo continuo:
 
 A ogni intervallo scrive un riepilogo dell'attivita' e fa avanzare il ciclo
 di vita delle VM: per quelle con la finestra di osservazione scaduta genera
-la proposta con il Policy Engine.
-I componenti successivi (enforcer, detector) verranno aggiunti qui.
+la proposta con il Policy Engine; quelle approvate vengono applicate
+dall'Enforcer, e quelle gia' applicate vengono riconciliate.
 """
 
 import argparse
@@ -27,6 +27,7 @@ import openstack
 from sg_learner import __version__
 from sg_learner import collector, engine, lifecycle
 from sg_learner.cloud import Cloud
+from sg_learner.enforcer import Enforcer
 from sg_learner.follower import LogFollower
 from sg_learner.store import FlowStore
 
@@ -185,8 +186,10 @@ def main(argv=None):
     store = FlowStore(db_path)
     LOG.info("Database: %s", db_path)
     worker = CollectionWorker(LogFollower(ovn_log, store), store)
-    manager = lifecycle.Lifecycle(store, Cloud(conn),
+    cloud = Cloud(conn)
+    manager = lifecycle.Lifecycle(store, cloud,
                                   engine.options_from_config(conf))
+    enforcer = Enforcer(store, cloud)
 
     next_report = time.monotonic() + interval
     while not stopping:
@@ -204,6 +207,12 @@ def main(argv=None):
                              len(vm.proposal["rules"]))
             except Exception:
                 LOG.exception("Errore durante la generazione delle proposte")
+            try:
+                for vm in enforcer.tick():
+                    LOG.info("Proposta di %s applicata: security group %s",
+                             vm.name, vm.learned_sg_id)
+            except Exception:
+                LOG.exception("Errore durante l'applicazione delle proposte")
             next_report += interval
         time.sleep(poll_interval)
 

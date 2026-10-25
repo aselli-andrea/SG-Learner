@@ -12,7 +12,7 @@ Ogni VM seguita da SG-Learner attraversa questi stati:
 - alla fine della finestra il servizio genera la proposta con il Policy
   Engine (tick); l'amministratore puo' anche anticiparla (generate);
 - approve: l'amministratore approva la proposta; l'applicazione su Neutron
-  e' compito dell'Enforcer.
+  e' compito dell'Enforcer (enforcer.py), che porta la VM in ENFORCING.
 """
 
 import dataclasses
@@ -79,13 +79,20 @@ class Lifecycle:
             port.security_group_ids, port.project_id,
             name=f"sg-learner-{port.server_name}")
         self.store.forget(port.mac)
+        # Se la VM era gia' seguita, i gruppi "originali" (per il rollback)
+        # e il gruppo learned restano quelli di prima
+        previous = self.store.get_vm(port.server_id)
+        originals = (previous.security_groups if previous
+                     else list(port.security_group_ids))
         vm = VmRecord(
             server_id=port.server_id, name=port.server_name,
             project_id=port.project_id, port_id=port.port_id,
             mac=port.mac, ip=port.ip, state=LEARNING,
-            security_groups=list(port.security_group_ids),
+            security_groups=originals,
             log_ids=log_ids, learn_started=now,
             learn_until=now + datetime.timedelta(seconds=duration),
+            learned_sg_id=previous.learned_sg_id if previous else None,
+            enforce_log_ids=previous.enforce_log_ids if previous else [],
         )
         self.store.save_vm(vm)
         return vm

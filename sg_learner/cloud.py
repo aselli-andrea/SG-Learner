@@ -83,6 +83,62 @@ class Cloud:
                 ip_to_group[fixed_ip["ip_address"]] = group
         return ip_to_group, group_to_server
 
+    # --- Security group e porte (usati dall'Enforcer) ---------------------------
+
+    def port_security_groups(self, port_id):
+        return list(self.conn.network.get_port(port_id).security_group_ids
+                    or ())
+
+    def security_group_names(self, sg_ids):
+        """{ID: nome} dei security group indicati."""
+        return {sg_id: self.conn.network.get_security_group(sg_id).name
+                for sg_id in sg_ids}
+
+    def set_port_security_groups(self, port_id, sg_ids):
+        self.conn.network.update_port(port_id,
+                                      security_group_ids=list(sg_ids))
+
+    def ensure_security_group(self, name, project_id, description=""):
+        """Restituisce l'ID del gruppo `name` nel progetto, creandolo se
+        non esiste.
+
+        Un gruppo appena creato viene svuotato: Neutron vi aggiunge regole
+        "tutto permesso in uscita" (IPv4 e IPv6) che allargherebbero i
+        permessi di qualunque porta a cui il gruppo viene assegnato.
+        """
+        for sg in self.conn.network.security_groups(name=name,
+                                                    project_id=project_id):
+            return sg.id
+        sg = self.conn.network.create_security_group(
+            name=name, project_id=project_id, description=description)
+        for rule in self.security_group_rules(sg.id):
+            self.delete_rule(rule["id"])
+        LOG.info("Creato il security group %s (%s), senza regole",
+                 name, sg.id)
+        return sg.id
+
+    def security_group_rules(self, sg_id):
+        """Regole del gruppo, come dizionari con i campi di Neutron."""
+        return [{
+            "id": rule.id,
+            "direction": rule.direction,
+            "ethertype": rule.ether_type,
+            "protocol": rule.protocol,
+            "port_range_min": rule.port_range_min,
+            "port_range_max": rule.port_range_max,
+            "remote_ip_prefix": rule.remote_ip_prefix,
+            "remote_group_id": rule.remote_group_id,
+        } for rule in self.conn.network.security_group_rules(
+            security_group_id=sg_id)]
+
+    def create_rule(self, sg_id, project_id, rule):
+        self.conn.network.create_security_group_rule(
+            security_group_id=sg_id, project_id=project_id, **rule)
+
+    def delete_rule(self, rule_id):
+        self.conn.network.delete_security_group_rule(rule_id,
+                                                     ignore_missing=True)
+
     # --- Packet Logging di Neutron ---------------------------------------------
 
     def _request(self, method, path, **kwargs):
