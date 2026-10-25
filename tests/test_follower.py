@@ -77,6 +77,49 @@ def test_rotation_restarts_from_new_file(log, store):
     assert follower.read_new_lines() == ["nuovo file"]
 
 
+def test_rotation_without_reopen_keeps_reading_old_file(log, store):
+    """Caso osservato dal vivo: dopo la rotazione ovn-controller continua a
+    scrivere nel file rinominato e quello nuovo resta vuoto."""
+    follower = LogFollower(str(log), store)
+    os.rename(log, str(log) + ".1")
+    log.write_text("")                          # nuovo file, vuoto
+    append(str(log) + ".1", "scritta nel file ruotato\n")
+
+    assert follower.read_new_lines() == ["scritta nel file ruotato"]
+    append(str(log) + ".1", "ancora nel file ruotato\n")
+    assert follower.read_new_lines() == ["ancora nel file ruotato"]
+
+
+def test_rotation_reads_old_file_to_the_end_then_switches(log, store):
+    follower = LogFollower(str(log), store)
+    append(log, "prima\n")
+    assert follower.read_new_lines() == ["prima"]
+
+    os.rename(log, str(log) + ".1")
+    append(str(log) + ".1", "ultima del vecchio\n")   # scritta dopo il rename
+    log.write_text("prima del nuovo\n")
+
+    assert follower.read_new_lines() == ["ultima del vecchio",
+                                         "prima del nuovo"]
+    append(log, "seconda del nuovo\n")
+    assert follower.read_new_lines() == ["seconda del nuovo"]
+
+
+def test_resume_after_restart_in_rotated_file(log, store):
+    first = LogFollower(str(log), store)
+    append(log, "letta\n")
+    assert first.read_new_lines() == ["letta"]
+    first.close()
+
+    # Mentre il servizio e' fermo: rotazione e una riga nel file vecchio
+    os.rename(log, str(log) + ".1")
+    append(str(log) + ".1", "persa senza la ricerca per inode\n")
+    log.write_text("")
+
+    second = LogFollower(str(log), store)
+    assert second.read_new_lines() == ["persa senza la ricerca per inode"]
+
+
 def test_truncation_restarts_from_beginning(log, store):
     follower = LogFollower(str(log), store)
     append(log, "riga lunga che verra' cancellata\n")
