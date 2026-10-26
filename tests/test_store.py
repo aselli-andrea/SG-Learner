@@ -6,7 +6,7 @@ import pathlib
 import pytest
 
 from sg_learner import collector
-from sg_learner.store import FlowStore
+from sg_learner.store import ConflictError, FlowStore, VmRecord
 
 FIXTURE = pathlib.Path(__file__).parent / "fixtures" / "ovn_acl_log_sample.txt"
 
@@ -135,3 +135,22 @@ def test_real_log_into_store(store):
     assert store.total_connections() == len(flows)
     drops = store.observations(verdict="drop")
     assert drops and all(o.service_port == 80 for o in drops)
+
+
+def test_stale_vm_is_not_saved_over_a_newer_one(store):
+    """Due processi (servizio e CLI) leggono la stessa VM: vince il primo
+    salvataggio, il secondo riceve ConflictError invece di sovrascrivere."""
+    store.save_vm(VmRecord(
+        server_id="srv", name="vm", project_id="p", port_id="port",
+        mac="fa:16:3e:00:00:09", ip="10.0.0.9", state="enforcing",
+        security_groups=[], log_ids=[]))
+    service_copy = store.get_vm("vm")
+    cli_copy = store.get_vm("vm")
+
+    cli_copy.state = "approved"
+    store.save_vm(cli_copy)
+    service_copy.ip = "10.0.0.99"
+
+    with pytest.raises(ConflictError):
+        store.save_vm(service_copy)
+    assert store.get_vm("vm").state == "approved"

@@ -19,7 +19,7 @@ import dataclasses
 import datetime
 
 from sg_learner import engine
-from sg_learner.store import VmRecord
+from sg_learner.store import ConflictError, VmRecord
 
 LEARNING = "learning"
 PROPOSED = "proposed"
@@ -145,9 +145,14 @@ class Lifecycle:
         """Genera le proposte per le VM con la finestra di osservazione
         scaduta. Restituisce le VM aggiornate."""
         now = now or _now()
-        return [self._propose(vm, now)
-                for vm in self.store.list_vms(state=LEARNING)
-                if vm.learn_until and vm.learn_until <= now]
+        proposed = []
+        for vm in self.store.list_vms(state=LEARNING):
+            if vm.learn_until and vm.learn_until <= now:
+                try:
+                    proposed.append(self._propose(vm, now))
+                except ConflictError:
+                    pass        # cambiata dalla CLI: si riprova al giro dopo
+        return proposed
 
     def status(self):
         return self.store.list_vms()

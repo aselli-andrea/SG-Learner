@@ -98,20 +98,36 @@ def test_dhcp_is_excluded():
 
     assert [r.port for r in proposal.rules] == [22]
     assert [reason for _, reason in proposal.excluded] == [
-        "DHCP, gestito da Neutron"]
+        "DHCP, coperto dalle regole di base"]
     assert proposal.vm_ip == VM_IP
 
 
 def test_egress_rules_and_icmp():
     proposal = engine.build_proposal([
-        obs(direction="egress", port=80, remote="169.254.169.254", count=15),
+        obs(direction="egress", port=443, remote="93.184.216.34", count=15),
         obs(protocol="icmp", port=None, icmp_type=8, count=4),
     ], VM_MAC)
 
     assert described(proposal) == [
         ("ingress icmp tipo 8 da 172.24.4.1/32", 4),
-        ("egress tcp/80 verso 169.254.169.254/32", 15),
+        ("egress tcp/443 verso 93.184.216.34/32", 15),
     ]
+
+
+def test_metadata_is_covered_by_base_rules():
+    """DHCP e metadata servono all'avvio: sono regole di base, sempre
+    applicate, anche se durante l'osservazione non sono stati visti."""
+    metadata = obs(direction="egress", port=80, remote="169.254.169.254")
+
+    proposal = engine.build_proposal([metadata, obs()], VM_MAC)
+
+    assert [r.port for r in proposal.rules] == [22]
+    assert [reason for _, reason in proposal.excluded] == [
+        "metadata, coperto dalle regole di base"]
+    assert [r.describe() for r in engine.BASE_RULES] == [
+        "egress udp/67 verso 0.0.0.0/0",
+        "egress tcp/80 verso 169.254.169.254/32"]
+    assert "regole di base" in proposal.summary()
 
 
 def test_low_confidence_and_minimum_connections():

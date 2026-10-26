@@ -16,6 +16,8 @@ apre la connessione: per il traffico in ingresso e' la porta della VM
 Il database contiene anche:
 - la tabella `vms`, con le VM seguite da SG-Learner e il loro stato nel
   ciclo di vita (osservazione, proposta, approvazione, applicazione);
+- la tabella `alerts`, con le anomalie trovate dall'Anomaly Detector nel
+  traffico bloccato delle VM gia' applicate;
 - una piccola tabella chiave/valore usata dal servizio per ricordare il
   proprio stato (ad esempio fin dove ha letto il log di OVN), cosi' da
   riprendere dopo un riavvio.
@@ -27,7 +29,7 @@ import datetime
 import json
 import sqlite3
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 # SQLite tratta i NULL come valori sempre diversi tra loro, quindi non
 # funzionerebbero nella chiave primaria: i campi assenti (porte per ICMP,
@@ -73,6 +75,23 @@ CREATE TABLE IF NOT EXISTS vms (
     learned_sg_id   TEXT,
     enforce_log_ids TEXT NOT NULL DEFAULT '[]'
 );
+CREATE TABLE IF NOT EXISTS alerts (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    server_id    TEXT    NOT NULL,
+    kind         TEXT    NOT NULL,
+    direction    TEXT    NOT NULL,
+    protocol     TEXT    NOT NULL,
+    service_port INTEGER NOT NULL,
+    icmp_type    INTEGER NOT NULL,
+    remote_ip    TEXT    NOT NULL,
+    count        INTEGER NOT NULL,
+    ports        INTEGER NOT NULL DEFAULT 1,
+    first_seen   TEXT    NOT NULL,
+    last_seen    TEXT    NOT NULL,
+    status       TEXT    NOT NULL DEFAULT 'open',
+    UNIQUE (server_id, direction, protocol, service_port, icmp_type,
+            remote_ip)
+);
 """
 
 _UPSERT = """
@@ -87,6 +106,10 @@ DO UPDATE SET count = count + 1,
               first_seen = MIN(first_seen, excluded.first_seen),
               last_seen = MAX(last_seen, excluded.last_seen)
 """
+
+
+class ConflictError(Exception):
+    """La VM e' stata modificata da un altro processo dopo la lettura."""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -125,6 +148,25 @@ class VmRecord:
     updated_at: datetime.datetime | None = None
     learned_sg_id: str | None = None
     enforce_log_ids: list = dataclasses.field(default_factory=list)
+
+
+@dataclasses.dataclass
+class Alert:
+    """Un'anomalia rilevata sul traffico bloccato di una VM applicata."""
+
+    id: int
+    server_id: str
+    kind: str              # alert, candidate, scan
+    direction: str
+    protocol: str
+    service_port: int | None
+    icmp_type: int | None
+    remote_ip: str
+    count: int
+    ports: int             # porte distinte (per kind=scan)
+    first_seen: datetime.datetime
+    last_seen: datetime.datetime
+    status: str            # open, accepted, dismissed
 
 
 def _to_db(value):
@@ -280,22 +322,52 @@ class FlowStore:
     # --- VM seguite (ciclo di vita) ------------------------------------------
 
     def save_vm(self, vm):
-        """Inserisce o aggiorna una VM. Aggiorna anche updated_at."""
-        vm.updated_at = datetime.datetime.now(datetime.timezone.utc)
+        """Inserisce o aggiorna una VM. Aggiorna anche updated_at.
+
+        Il servizio e la CLI sono due processi che modificano le stesse VM.
+        Per non perdere le modifiche dell'altro, una VM letta dal database
+        (updated_at valorizzato) viene salvata solo se nel frattempo nessuno
+        l'ha cambiata; altrimenti si solleva ConflictError e chi chiama
+        rilegge la VM e riprova. Caso osservato dal vivo: l'Enforcer, nel
+        giro di riconciliazione, sovrascriveva un `alerts accept` fatto
+        dalla CLI mentre stava parlando con Neutron.
+        """
+        previous = vm.updated_at
+        now = datetime.datetime.now(datetime.timezone.utc)
+        values = (vm.name, vm.project_id, vm.port_id, vm.mac, vm.ip,
+                  vm.state, json.dumps(vm.security_groups),
+                  json.dumps(vm.log_ids), _opt_ts_to_db(vm.learn_started),
+                  _opt_ts_to_db(vm.learn_until),
+                  json.dumps(vm.proposal) if vm.proposal is not None
+                  else None,
+                  _ts_to_db(now), vm.learned_sg_id,
+                  json.dumps(vm.enforce_log_ids))
         with self._transaction() as db:
+            if previous is not None:
+                updated = db.execute(
+                    "UPDATE vms SET name = ?, project_id = ?, port_id = ?,"
+                    " mac = ?, ip = ?, state = ?, security_groups = ?,"
+                    " log_ids = ?, learn_started = ?, learn_until = ?,"
+                    " proposal = ?, updated_at = ?, learned_sg_id = ?,"
+                    " enforce_log_ids = ?"
+                    " WHERE server_id = ? AND updated_at = ?",
+                    values + (vm.server_id, _ts_to_db(previous))).rowcount
+                if updated:
+                    vm.updated_at = now
+                    return
+                if db.execute("SELECT 1 FROM vms WHERE server_id = ?",
+                              (vm.server_id,)).fetchone():
+                    raise ConflictError(
+                        f"{vm.name} e' stata modificata nel frattempo da un"
+                        " altro processo: riprovare")
             db.execute(
-                "INSERT OR REPLACE INTO vms (server_id, name, project_id,"
-                " port_id, mac, ip, state, security_groups, log_ids,"
-                " learn_started, learn_until, proposal, updated_at,"
-                " learned_sg_id, enforce_log_ids)"
+                "INSERT OR REPLACE INTO vms (name, project_id, port_id, mac,"
+                " ip, state, security_groups, log_ids, learn_started,"
+                " learn_until, proposal, updated_at, learned_sg_id,"
+                " enforce_log_ids, server_id)"
                 " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (vm.server_id, vm.name, vm.project_id, vm.port_id, vm.mac,
-                 vm.ip, vm.state, json.dumps(vm.security_groups),
-                 json.dumps(vm.log_ids), _opt_ts_to_db(vm.learn_started),
-                 _opt_ts_to_db(vm.learn_until),
-                 json.dumps(vm.proposal) if vm.proposal is not None else None,
-                 _ts_to_db(vm.updated_at), vm.learned_sg_id,
-                 json.dumps(vm.enforce_log_ids)))
+                values + (vm.server_id,))
+        vm.updated_at = now
 
     def get_vm(self, name_or_id):
         """Cerca una VM per ID o per nome. Restituisce None se non c'e'."""
@@ -327,6 +399,81 @@ class FlowStore:
             updated_at=_opt_ts_from_db(row["updated_at"]),
             learned_sg_id=row["learned_sg_id"],
             enforce_log_ids=json.loads(row["enforce_log_ids"] or "[]"),
+        )
+
+    # --- Anomalie (Anomaly Detector) ------------------------------------------
+
+    def upsert_alert(self, server_id, kind, direction, protocol,
+                     service_port, icmp_type, remote_ip, count, first_seen,
+                     last_seen, ports=1):
+        """Inserisce o aggiorna un'anomalia. Restituisce (alert, nuova).
+
+        Un'anomalia gia' chiusa (accettata o ignorata) non viene riaperta:
+        si aggiornano solo i conteggi.
+        """
+        key = (server_id, direction, protocol, _to_db(service_port),
+               _to_db(icmp_type), remote_ip)
+        existing = self._db.execute(
+            "SELECT * FROM alerts WHERE server_id = ? AND direction = ? AND"
+            " protocol = ? AND service_port = ? AND icmp_type = ? AND"
+            " remote_ip = ?", key).fetchone()
+        with self._transaction() as db:
+            if existing is None:
+                db.execute(
+                    "INSERT INTO alerts (server_id, kind, direction, protocol,"
+                    " service_port, icmp_type, remote_ip, count, ports,"
+                    " first_seen, last_seen) VALUES"
+                    " (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (server_id, kind, direction, protocol,
+                     _to_db(service_port), _to_db(icmp_type), remote_ip,
+                     count, ports, _ts_to_db(first_seen),
+                     _ts_to_db(last_seen)))
+            else:
+                db.execute(
+                    "UPDATE alerts SET kind = ?, count = ?, ports = ?,"
+                    " last_seen = ? WHERE id = ?",
+                    (kind if existing["status"] == "open"
+                     else existing["kind"], count, ports,
+                     _ts_to_db(last_seen), existing["id"]))
+        row = self._db.execute(
+            "SELECT * FROM alerts WHERE server_id = ? AND direction = ? AND"
+            " protocol = ? AND service_port = ? AND icmp_type = ? AND"
+            " remote_ip = ?", key).fetchone()
+        return self._row_to_alert(row), existing is None
+
+    def list_alerts(self, server_id=None, status="open"):
+        query, params = "SELECT * FROM alerts WHERE 1=1", []
+        if server_id is not None:
+            query += " AND server_id = ?"
+            params.append(server_id)
+        if status is not None:
+            query += " AND status = ?"
+            params.append(status)
+        query += " ORDER BY id"
+        return [self._row_to_alert(r) for r in self._db.execute(query, params)]
+
+    def get_alert(self, alert_id):
+        row = self._db.execute("SELECT * FROM alerts WHERE id = ?",
+                               (alert_id,)).fetchone()
+        return self._row_to_alert(row) if row else None
+
+    def set_alert_status(self, alert_id, status):
+        with self._transaction() as db:
+            db.execute("UPDATE alerts SET status = ? WHERE id = ?",
+                       (status, alert_id))
+
+    @staticmethod
+    def _row_to_alert(row):
+        return Alert(
+            id=row["id"], server_id=row["server_id"], kind=row["kind"],
+            direction=row["direction"], protocol=row["protocol"],
+            service_port=_from_db(row["service_port"]),
+            icmp_type=_from_db(row["icmp_type"]),
+            remote_ip=row["remote_ip"], count=row["count"],
+            ports=row["ports"],
+            first_seen=_ts_from_db(row["first_seen"]),
+            last_seen=_ts_from_db(row["last_seen"]),
+            status=row["status"],
         )
 
     # --- Stato del servizio ---------------------------------------------------

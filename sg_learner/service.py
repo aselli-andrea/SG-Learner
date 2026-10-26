@@ -10,7 +10,8 @@ di OVN. Poi, in un ciclo continuo:
 A ogni intervallo scrive un riepilogo dell'attivita' e fa avanzare il ciclo
 di vita delle VM: per quelle con la finestra di osservazione scaduta genera
 la proposta con il Policy Engine; quelle approvate vengono applicate
-dall'Enforcer, e quelle gia' applicate vengono riconciliate.
+dall'Enforcer, e quelle gia' applicate vengono riconciliate. Infine
+l'Anomaly Detector esamina il traffico bloccato delle VM applicate.
 """
 
 import argparse
@@ -25,7 +26,7 @@ import time
 import openstack
 
 from sg_learner import __version__
-from sg_learner import collector, engine, lifecycle
+from sg_learner import collector, detector, engine, lifecycle
 from sg_learner.cloud import Cloud
 from sg_learner.enforcer import Enforcer
 from sg_learner.follower import LogFollower
@@ -190,6 +191,8 @@ def main(argv=None):
     manager = lifecycle.Lifecycle(store, cloud,
                                   engine.options_from_config(conf))
     enforcer = Enforcer(store, cloud)
+    anomalies = detector.AnomalyDetector(
+        store, cloud, **detector.options_from_config(conf))
 
     next_report = time.monotonic() + interval
     while not stopping:
@@ -213,6 +216,13 @@ def main(argv=None):
                              vm.name, vm.learned_sg_id)
             except Exception:
                 LOG.exception("Errore durante l'applicazione delle proposte")
+            try:
+                for vm, alert in anomalies.tick():
+                    LOG.warning("Anomalia %d su %s [%s]: %s (%d tentativi)",
+                                alert.id, vm.name, alert.kind,
+                                detector.describe(alert), alert.count)
+            except Exception:
+                LOG.exception("Errore durante l'analisi delle anomalie")
             next_report += interval
         time.sleep(poll_interval)
 

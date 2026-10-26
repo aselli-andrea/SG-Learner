@@ -8,7 +8,8 @@ Per una VM in stato APPROVED:
    fare (le regole dei security group si sommano), ma la rende "membro"
    del gruppo, cosi' la regola remote_group funziona subito;
 2. crea (o riusa) il gruppo `learned-<nome>` della VM e ne allinea le
-   regole a quelle approvate: crea le mancanti e cancella le altre.
+   regole a quelle approvate piu' le regole di base (DHCP e metadata,
+   engine.BASE_RULES): crea le mancanti e cancella le altre.
    Ogni gruppo nuovo nasce vuoto: cloud.py cancella subito le regole di
    uscita "tutto permesso" che Neutron vi aggiunge;
 3. assegna alla porta della VM solo `learned-<nome>` (piu' i gruppi
@@ -24,10 +25,12 @@ gruppi della porta o le regole, vengono ripristinati. Ogni operazione e'
 idempotente: ripeterla quando tutto e' in ordine non cambia nulla.
 """
 
+import datetime
 import logging
 
 from sg_learner import engine, lifecycle
 from sg_learner.cloud import LOG_EVENT_DROP
+from sg_learner.store import ConflictError
 
 LOG = logging.getLogger(__name__)
 
@@ -83,9 +86,21 @@ class Enforcer:
                 event=LOG_EVENT_DROP)
 
         first_time = vm.state != lifecycle.ENFORCING
+        if first_time:
+            # Da qui in avanti i DROP sono di competenza dell'Anomaly Detector
+            vm.proposal["enforced_at"] = datetime.datetime.now(
+                datetime.timezone.utc).isoformat()
         vm.learned_sg_id = sg_id
         vm.state = lifecycle.ENFORCING
-        self.store.save_vm(vm)
+        try:
+            self.store.save_vm(vm)
+        except ConflictError:
+            # Mentre parlavamo con Neutron la VM e' stata cambiata (es. con
+            # `alerts accept`): non si sovrascrive, il prossimo giro
+            # applichera' la versione aggiornata.
+            LOG.info("%s modificata nel frattempo: verra' riallineata al"
+                     " prossimo giro", vm.name)
+            return None
         if first_time:
             LOG.info("%s: proposta applicata (%d regole)", vm.name,
                      len(vm.proposal["rules"]))
@@ -118,9 +133,11 @@ class Enforcer:
 
     def _desired_rules(self, vm, groups):
         rules = []
-        for rule in vm.proposal["rules"]:
+        proposed = [engine.ProposedRule(**rule)
+                    for rule in vm.proposal["rules"]]
+        for rule in proposed + list(engine.BASE_RULES):
             neutron = {field: None for field in _RULE_FIELDS}
-            neutron.update(engine.ProposedRule(**rule).to_neutron())
+            neutron.update(rule.to_neutron())
             if neutron.get("remote_group_id"):
                 neutron["remote_group_id"] = groups[neutron["remote_group_id"]]
             rules.append(neutron)
@@ -148,7 +165,8 @@ class Enforcer:
         """
         applied = []
         for vm in self.store.list_vms(state=lifecycle.APPROVED):
-            applied.append(self.apply(vm))
+            if self.apply(vm) is not None:
+                applied.append(vm)
         for vm in self.store.list_vms(state=lifecycle.ENFORCING):
             self.apply(vm)
         return applied

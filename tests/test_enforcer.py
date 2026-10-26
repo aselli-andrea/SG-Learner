@@ -157,6 +157,7 @@ def test_apply_creates_learned_group_with_only_approved_rules(
     assert neutron.groups[vm.learned_sg_id] == "learned-vm-web"
     assert rules_of(neutron, vm.learned_sg_id) == [
         ("egress", "tcp", 80, "169.254.169.254/32", None),
+        ("egress", "udp", 67, "0.0.0.0/0", None),     # regola di base DHCP
         ("ingress", "icmp", 8, "172.24.4.1/32", None),
         ("ingress", "tcp", 22, "172.24.4.1/32", None),
     ]   # le regole "tutto permesso in uscita" sono state cancellate
@@ -212,6 +213,8 @@ def test_remote_group_makes_peer_a_member(enforcer, neutron, store):
     assert neutron.ports["port-web"] == ["sg-orig", web_group]
     assert rules_of(neutron, web_group) == []
     assert rules_of(neutron, vm.learned_sg_id) == [
+        ("egress", "tcp", 80, "169.254.169.254/32", None),   # di base
+        ("egress", "udp", 67, "0.0.0.0/0", None),            # di base
         ("ingress", "tcp", 5432, None, web_group)]
 
 
@@ -227,7 +230,7 @@ def test_peer_membership_survives_its_own_enforcement(
 
     # learned-vm-web e' sia il gruppo di vm-web sia quello citato da vm-db
     assert neutron.ports["port-web"] == [web_vm.learned_sg_id]
-    assert len(rules_of(neutron, web_vm.learned_sg_id)) == 3
+    assert len(rules_of(neutron, web_vm.learned_sg_id)) == 4
 
 
 def test_rollback_restores_original_groups(enforcer, neutron, store, web):
@@ -284,3 +287,24 @@ def test_relearn_keeps_original_groups(store, neutron, enforcer, web):
     assert vm.state == lifecycle.LEARNING
     assert vm.security_groups == ["sg-orig"]       # non il gruppo learned
     assert vm.learned_sg_id is not None
+
+
+def test_cli_change_during_reconcile_is_not_lost(enforcer, neutron, store, web):
+    """Caso osservato dal vivo: `alerts accept` arriva mentre l'Enforcer
+    sta riconciliando la stessa VM."""
+    enforcer.apply(store.get_vm("vm-web"))
+    service_copy = store.get_vm("vm-web")       # letta dal servizio
+
+    cli_copy = store.get_vm("vm-web")           # la CLI accetta una regola
+    ssh = next(r for r in cli_copy.proposal["rules"] if r["port"] == 22)
+    cli_copy.proposal["rules"].append(dict(ssh, port=8080))
+    cli_copy.state = lifecycle.APPROVED
+    store.save_vm(cli_copy)
+
+    assert enforcer.apply(service_copy) is None  # non sovrascrive
+    assert store.get_vm("vm-web").state == lifecycle.APPROVED
+
+    enforcer.tick()                              # giro successivo
+    vm = store.get_vm("vm-web")
+    assert vm.state == lifecycle.ENFORCING
+    assert 8080 in [r[2] for r in rules_of(neutron, vm.learned_sg_id)]

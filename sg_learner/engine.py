@@ -9,8 +9,12 @@ Regole di costruzione della proposta:
 
 1. Solo il traffico consentito (verdict=allow) diventa una regola. I
    tentativi bloccati vengono riportati a parte, come informazione.
-2. Il traffico gestito automaticamente da Neutron non diventa una regola:
-   DHCP (UDP 67/68) e Neighbor Discovery IPv6 (ICMPv6 133-137).
+2. Il traffico di infrastruttura non diventa una regola appresa:
+   - DHCP e metadata sono coperti dalle regole di base (BASE_RULES), che
+     l'Enforcer aggiunge sempre al gruppo learned. Con ML2/OVN Neutron
+     NON consente il DHCP da solo: senza la regola di base, al riavvio
+     la VM non ottiene l'indirizzo (osservato dal vivo);
+   - la Neighbor Discovery IPv6 (ICMPv6 133-137) e' gestita da Neutron.
 3. Le connessioni vengono raggruppate per direzione, protocollo e porta
    di servizio (o tipo ICMP).
 4. Per ogni gruppo, gli altri capi della comunicazione diventano:
@@ -33,9 +37,9 @@ DEFAULT_PUBLIC_THRESHOLD = 5
 DEFAULT_MIN_CONNECTIONS = 1
 DEFAULT_LOW_CONFIDENCE_BELOW = 3
 
-# Traffico che Neutron consente sempre, indipendentemente dal security group
 _DHCP_PORTS = {67, 68, 546, 547}
 _ICMPV6_NEIGHBOR_DISCOVERY = {133, 134, 135, 136, 137}
+METADATA_IP = "169.254.169.254"
 
 
 @dataclasses.dataclass(frozen=True)
@@ -52,6 +56,7 @@ class ProposedRule:
     connections: int
     remotes: tuple
     low_confidence: bool
+    base: bool = False
 
     def describe(self):
         """Descrizione leggibile, ad esempio "ingress tcp/22 da 0.0.0.0/0"."""
@@ -99,6 +104,8 @@ class Proposal:
         """Riepilogo testuale, una riga per regola."""
         lines = [f"Proposta per {self.vm_ip or self.vm_mac}"
                  f" ({self.total_connections} connessioni osservate)"]
+        lines.append("  = regole di base, sempre presenti: "
+                     + ", ".join(r.describe() for r in BASE_RULES))
         for rule in self.rules:
             note = "  [poco osservata]" if rule.low_confidence else ""
             lines.append(f"  + {rule.describe():45} {rule.connections:>6}"
@@ -125,9 +132,29 @@ def options_from_config(conf):
     return options
 
 
+def _base_rule(direction, protocol, port, prefix):
+    return ProposedRule(
+        direction=direction, protocol=protocol, port=port, icmp_type=None,
+        ethertype="IPv4", remote_ip_prefix=prefix, remote_group=None,
+        connections=0, remotes=(), low_confidence=False, base=True)
+
+
+# Regole che servono a ogni VM per avviarsi, anche se durante l'osservazione
+# (fatta a VM gia' accesa) non sono state viste: la richiesta DHCP
+# (da 0.0.0.0 in broadcast, poi i rinnovi verso il server DHCP) e il
+# servizio metadata. Le risposte DHCP di OVN sono gia' consentite da OVN.
+BASE_RULES = (
+    _base_rule("egress", "udp", 67, "0.0.0.0/0"),
+    _base_rule("egress", "tcp", 80, f"{METADATA_IP}/32"),
+)
+
+
 def _exclusion_reason(obs):
     if obs.protocol == "udp" and obs.service_port in _DHCP_PORTS:
-        return "DHCP, gestito da Neutron"
+        return "DHCP, coperto dalle regole di base"
+    if (obs.direction != INGRESS and obs.remote_ip == METADATA_IP
+            and obs.protocol == "tcp" and obs.service_port == 80):
+        return "metadata, coperto dalle regole di base"
     if obs.protocol == "icmp6" and obs.icmp_type in _ICMPV6_NEIGHBOR_DISCOVERY:
         return "Neighbor Discovery IPv6, gestito da Neutron"
     return None

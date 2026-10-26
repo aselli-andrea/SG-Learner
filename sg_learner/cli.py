@@ -8,6 +8,9 @@ Uso (dopo `source devstack/openrc admin admin`):
     sg-learner proposal show vm-web          mostra la proposta
     sg-learner proposal approve vm-web       approva la proposta
     sg-learner rollback vm-web               ripristina i gruppi originali
+    sg-learner alerts list [vm]              anomalie aperte
+    sg-learner alerts accept 3               trasforma l'anomalia 3 in regola
+    sg-learner alerts dismiss 3              ignora l'anomalia 3
 
 Il CLI usa le credenziali dell'utente che lo esegue (variabili OS_* di
 openrc): solo chi ha accesso amministrativo a OpenStack puo' usarlo.
@@ -21,10 +24,10 @@ import sys
 
 import openstack
 
-from sg_learner import engine, lifecycle
+from sg_learner import detector, engine, lifecycle
 from sg_learner.cloud import Cloud
 from sg_learner.enforcer import Enforcer
-from sg_learner.store import FlowStore
+from sg_learner.store import ConflictError, FlowStore
 
 DEFAULT_CONFIG = "/etc/sg-learner/sg-learner.conf"
 DEFAULT_DATA_DIR = "/opt/stack/data/sg-learner"
@@ -53,6 +56,18 @@ def print_status(vms, out=sys.stdout):
               file=out)
 
 
+def print_alerts(alerts, names, out=sys.stdout):
+    if not alerts:
+        print("Nessuna anomalia aperta.", file=out)
+        return
+    print(f"{'ID':>4} {'VM':14} {'TIPO':10} {'TENTATIVI':>9} {'ULTIMO':12}"
+          " DESCRIZIONE", file=out)
+    for a in alerts:
+        print(f"{a.id:>4} {names.get(a.server_id, a.server_id)[:14]:14}"
+              f" {a.kind:10} {a.count:>9} {_local(a.last_seen):12}"
+              f" {detector.describe(a)}", file=out)
+
+
 def build_parser():
     parser = argparse.ArgumentParser(
         prog="sg-learner",
@@ -70,6 +85,17 @@ def build_parser():
     rollback = sub.add_parser(
         "rollback", help="ripristina i security group originali")
     rollback.add_argument("vm", help="nome o ID della VM")
+
+    alerts = sub.add_parser("alerts", help="anomalie nel traffico bloccato")
+    alerts_sub = alerts.add_subparsers(dest="action", required=True)
+    alerts_list = alerts_sub.add_parser("list", help="anomalie aperte")
+    alerts_list.add_argument("vm", nargs="?", help="solo questa VM")
+    alerts_list.add_argument("--all", action="store_true",
+                             help="anche quelle gia' gestite")
+    for action, text in (("accept", "trasforma l'anomalia in una regola"),
+                         ("dismiss", "ignora l'anomalia")):
+        p = alerts_sub.add_parser(action, help=text)
+        p.add_argument("id", type=int, help="ID dell'anomalia")
 
     proposal = sub.add_parser("proposal", help="gestione delle proposte")
     proposal_sub = proposal.add_subparsers(dest="action", required=True)
@@ -113,6 +139,24 @@ def main(argv=None, conn=None, out=sys.stdout):
                   " La proposta resta disponibile (stato 'proposed').",
                   file=out)
 
+        elif args.command == "alerts":
+            anomalies = detector.AnomalyDetector(
+                store, cloud, **detector.options_from_config(conf))
+            if args.action == "list":
+                server_id = manager.get(args.vm).server_id if args.vm else None
+                names = {vm.server_id: vm.name for vm in manager.status()}
+                print_alerts(store.list_alerts(
+                    server_id, status=None if args.all else "open"),
+                    names, out)
+            elif args.action == "accept":
+                vm = anomalies.accept(args.id)
+                print(f"Anomalia {args.id} accettata: la nuova regola per"
+                      f" {vm.name} verra' applicata entro 30 secondi.",
+                      file=out)
+            else:
+                anomalies.dismiss(args.id)
+                print(f"Anomalia {args.id} ignorata.", file=out)
+
         elif args.action == "generate":
             vm = manager.generate(args.vm)
             print(vm.proposal["summary"], file=out)
@@ -131,7 +175,8 @@ def main(argv=None, conn=None, out=sys.stdout):
             print(f"Proposta per {vm.name} approvata: il servizio la"
                   " applichera' entro 30 secondi.", file=out)
 
-    except (lifecycle.LifecycleError, LookupError, ValueError) as error:
+    except (lifecycle.LifecycleError, ConflictError, LookupError,
+            ValueError) as error:
         print(f"Errore: {error}", file=sys.stderr)
         return 1
     finally:
