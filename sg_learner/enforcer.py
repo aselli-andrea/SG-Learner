@@ -186,6 +186,17 @@ class Enforcer:
         # le loro regole remote_group smetterebbero di valere per questa VM
         current = self.cloud.port_security_groups(vm.port_id)
         memberships = self._memberships(current, exclude=vm.learned_sg_id)
+        # Anche il gruppo learned della VM resta sulla porta se altre VM lo
+        # citano nelle loro regole (es. vm-web accetta la 80 dal gruppo
+        # learned-vm-app): togliendolo, il rollback di vm-app romperebbe
+        # vm-web. Tenerlo non restringe nulla: le regole si sommano e quelle
+        # learned sono un sottoinsieme del traffico gia' permesso dai gruppi
+        # originali (piu' DHCP e metadata). Caso trovato nella demo a 3 VM.
+        if vm.learned_sg_id and vm.learned_sg_id in current and \
+                self.cloud.groups_referencing(vm.learned_sg_id):
+            memberships.append(vm.learned_sg_id)
+            LOG.info("%s: %s resta sulla porta perche' citato da regole di"
+                     " altre VM", vm.name, learned_group_name(vm.name))
         self.cloud.set_port_security_groups(
             vm.port_id, list(dict.fromkeys(vm.security_groups + memberships)))
         self.cloud.disable_logging(vm.enforce_log_ids)

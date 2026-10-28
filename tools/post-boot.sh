@@ -25,6 +25,7 @@ timedatectl | grep -E "Local time|synchronized"
 sudo ip link set br-ex up
 sudo ip addr replace 172.24.4.1/24 dev br-ex
 
+echo "Riavvio dei servizi DevStack (1-3 minuti, senza output: non interrompere)..."
 sudo systemctl restart "devstack@*"
 echo "Servizi DevStack riavviati, attendo 30 secondi..."
 sleep 30

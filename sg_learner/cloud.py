@@ -131,6 +131,12 @@ class Cloud:
         } for rule in self.conn.network.security_group_rules(
             security_group_id=sg_id)]
 
+    def groups_referencing(self, sg_id):
+        """Gruppi (diversi da sg_id) con regole remote_group verso sg_id."""
+        return {rule.security_group_id for rule in
+                self.conn.network.security_group_rules(remote_group_id=sg_id)
+                if rule.security_group_id != sg_id}
+
     def create_rule(self, sg_id, project_id, rule):
         self.conn.network.create_security_group_rule(
             security_group_id=sg_id, project_id=project_id, **rule)

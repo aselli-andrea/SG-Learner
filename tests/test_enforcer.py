@@ -67,6 +67,10 @@ class FakeNeutron:
         return [{"id": rid, **{k: v for k, v in r.items() if k != "sg"}}
                 for rid, r in self.rules.items() if r["sg"] == sg_id]
 
+    def groups_referencing(self, sg_id):
+        return {r["sg"] for r in self.rules.values()
+                if r["remote_group_id"] == sg_id and r["sg"] != sg_id}
+
     def create_rule(self, sg_id, project_id, rule):
         self.writes += 1
         full = {"direction": None, "ethertype": None, "protocol": None,
@@ -308,3 +312,22 @@ def test_cli_change_during_reconcile_is_not_lost(enforcer, neutron, store, web):
     vm = store.get_vm("vm-web")
     assert vm.state == lifecycle.ENFORCING
     assert 8080 in [r[2] for r in rules_of(neutron, vm.learned_sg_id)]
+
+
+def test_rollback_keeps_own_group_when_other_vms_reference_it(
+        enforcer, neutron, store, web):
+    """Caso trovato nella demo a 3 VM: vm-db accetta la 5432 dal gruppo
+    learned-vm-web. Il rollback di vm-web non deve togliere vm-web da quel
+    gruppo, altrimenti vm-db smetterebbe di accettarla."""
+    db_port = neutron.vms["srv-db"]
+    approved_vm(store, db_port, [obs(5432, "10.0.0.10", mac=db_port.mac)],
+                ip_to_group={"10.0.0.10": "vm:vm-web"},
+                vm_groups={"vm:vm-web": "srv-web"})
+    enforcer.apply(store.get_vm("vm-db"))
+    web_vm = enforcer.apply(store.get_vm("vm-web"))
+
+    enforcer.rollback("vm-web")
+
+    assert neutron.ports["port-web"] == ["sg-orig", web_vm.learned_sg_id]
+    assert neutron.logs and all(sg != web_vm.learned_sg_id
+                                for sg, _ in neutron.logs.values())
