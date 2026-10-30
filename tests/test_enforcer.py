@@ -9,7 +9,7 @@ import pytest
 from sg_learner import engine, lifecycle
 from sg_learner.cloud import VmPort
 from sg_learner.enforcer import Enforcer
-from sg_learner.store import FlowStore, Observation, VmRecord
+from sg_learner.store import ConflictError, FlowStore, Observation, VmRecord
 
 T0 = datetime.datetime(2026, 10, 25, 12, 0, tzinfo=datetime.timezone.utc)
 
@@ -305,8 +305,8 @@ def test_cli_change_during_reconcile_is_not_lost(enforcer, neutron, store, web):
     cli_copy.state = lifecycle.APPROVED
     store.save_vm(cli_copy)
 
-    assert enforcer.apply(service_copy) is None  # non sovrascrive
-    assert store.get_vm("vm-web").state == lifecycle.APPROVED
+    enforcer.apply(service_copy)                 # riconciliazione in corso
+    assert store.get_vm("vm-web").state == lifecycle.APPROVED  # non sovrascrive
 
     enforcer.tick()                              # giro successivo
     vm = store.get_vm("vm-web")
@@ -331,3 +331,32 @@ def test_rollback_keeps_own_group_when_other_vms_reference_it(
     assert neutron.ports["port-web"] == ["sg-orig", web_vm.learned_sg_id]
     assert neutron.logs and all(sg != web_vm.learned_sg_id
                                 for sg, _ in neutron.logs.values())
+
+
+def test_reconcile_without_changes_does_not_save(enforcer, neutron, store, web):
+    """Se la riconciliazione non cambia nulla la VM non viene salvata: un
+    comando della CLI lanciato nello stesso momento non va in conflitto."""
+    enforcer.apply(store.get_vm("vm-web"))
+    before = store.get_vm("vm-web").updated_at
+
+    enforcer.tick()
+
+    assert store.get_vm("vm-web").updated_at == before
+
+
+def test_rollback_retries_when_the_service_saves_meanwhile(
+        enforcer, neutron, store, web, monkeypatch):
+    enforcer.apply(store.get_vm("vm-web"))
+    real_save, calls = store.save_vm, []
+
+    def save_once_in_conflict(vm):
+        calls.append(vm.state)
+        if len(calls) == 1:
+            raise ConflictError("salvata dal servizio nel frattempo")
+        return real_save(vm)
+    monkeypatch.setattr(store, "save_vm", save_once_in_conflict)
+
+    vm = enforcer.rollback("vm-web")
+
+    assert vm.state == lifecycle.PROPOSED and len(calls) == 2
+    assert neutron.ports["port-web"] == ["sg-orig"]

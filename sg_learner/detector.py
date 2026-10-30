@@ -13,6 +13,11 @@ classifica:
   l'apprendimento (es. un backup notturno): diventa una regola candidata;
 - alert: tentativo bloccato isolato, da conoscere ma non da permettere.
 
+Un'anomalia chiusa (accettata o ignorata) non si riapre per nuovi tentativi
+uguali, finche' la VM resta applicata. Se la VM viene riosservata e
+riapplicata, inizia un nuovo periodo: gli stessi tentativi tornano a essere
+un'anomalia aperta.
+
 Una scansione viene riconosciuta solo quando le porte provate raggiungono
 la soglia: se il detector gira a meta' scansione, le prime porte diventano
 alert singoli. Quando poi la scansione viene riconosciuta, questi alert
@@ -90,8 +95,9 @@ class AnomalyDetector:
 
     def analyze(self, vm):
         """Aggiorna le anomalie di una VM. Restituisce quelle nuove."""
+        since = self._since(vm)
         drops = self.store.observations(vm_mac=vm.mac, verdict="drop",
-                                        since=self._since(vm))
+                                        since=since)
         new = []
 
         # Scansioni: un IP che prova molte porte diverse
@@ -108,7 +114,7 @@ class AnomalyDetector:
                     count=sum(o.count for o in items),
                     first_seen=min(o.first_seen for o in items),
                     last_seen=max(o.last_seen for o in items),
-                    ports=len(ports))
+                    ports=len(ports), reopen_before=since)
                 if is_new:
                     new.append(alert)
                 self._absorb_into_scan(vm, direction, remote)
@@ -123,7 +129,7 @@ class AnomalyDetector:
                 vm.server_id, kind, obs.direction, obs.protocol,
                 obs.service_port, obs.icmp_type, obs.remote_ip,
                 count=obs.count, first_seen=obs.first_seen,
-                last_seen=obs.last_seen)
+                last_seen=obs.last_seen, reopen_before=since)
             if is_new:
                 new.append(alert)
         return new

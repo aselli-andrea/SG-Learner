@@ -405,11 +405,15 @@ class FlowStore:
 
     def upsert_alert(self, server_id, kind, direction, protocol,
                      service_port, icmp_type, remote_ip, count, first_seen,
-                     last_seen, ports=1):
+                     last_seen, ports=1, reopen_before=None):
         """Inserisce o aggiorna un'anomalia. Restituisce (alert, nuova).
 
         Un'anomalia gia' chiusa (accettata o ignorata) non viene riaperta:
-        si aggiornano solo i conteggi.
+        si aggiornano solo i conteggi. Fa eccezione un'anomalia chiusa
+        visto l'ultima volta prima di `reopen_before`: appartiene a un
+        periodo di applicazione precedente (la VM e' stata riosservata e
+        riapplicata), quindi gli stessi tentativi di oggi sono un'anomalia
+        nuova e la riga torna aperta.
         """
         key = (server_id, direction, protocol, _to_db(service_port),
                _to_db(icmp_type), remote_ip)
@@ -417,6 +421,7 @@ class FlowStore:
             "SELECT * FROM alerts WHERE server_id = ? AND direction = ? AND"
             " protocol = ? AND service_port = ? AND icmp_type = ? AND"
             " remote_ip = ?", key).fetchone()
+        reopened = False
         with self._transaction() as db:
             if existing is None:
                 db.execute(
@@ -428,6 +433,15 @@ class FlowStore:
                      _to_db(service_port), _to_db(icmp_type), remote_ip,
                      count, ports, _ts_to_db(first_seen),
                      _ts_to_db(last_seen)))
+            elif (existing["status"] != "open" and reopen_before is not None
+                    and _ts_from_db(existing["last_seen"]) < reopen_before):
+                db.execute(
+                    "UPDATE alerts SET kind = ?, count = ?, ports = ?,"
+                    " first_seen = ?, last_seen = ?, status = 'open'"
+                    " WHERE id = ?",
+                    (kind, count, ports, _ts_to_db(first_seen),
+                     _ts_to_db(last_seen), existing["id"]))
+                reopened = True
             else:
                 db.execute(
                     "UPDATE alerts SET kind = ?, count = ?, ports = ?,"
@@ -439,7 +453,7 @@ class FlowStore:
             "SELECT * FROM alerts WHERE server_id = ? AND direction = ? AND"
             " protocol = ? AND service_port = ? AND icmp_type = ? AND"
             " remote_ip = ?", key).fetchone()
-        return self._row_to_alert(row), existing is None
+        return self._row_to_alert(row), existing is None or reopened
 
     def list_alerts(self, server_id=None, status="open"):
         query, params = "SELECT * FROM alerts WHERE 1=1", []

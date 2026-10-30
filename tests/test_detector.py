@@ -166,6 +166,24 @@ def test_dismissed_alert_stays_closed(store, vm, det):
     assert store.list_alerts() == []
 
 
+def test_dismissed_alert_reopens_after_a_new_enforcement(store, vm, det):
+    """Caso visto con tools/demo.sh: una scansione ignorata in una prova
+    precedente non deve nascondere la stessa scansione dopo una nuova
+    osservazione e applicazione della VM."""
+    store.record_many([drop(1, "10.0.0.2", 22)])
+    [(_, alert)] = det.tick()
+    det.dismiss(alert.id)
+
+    store.forget(MAC)                        # nuovo learn: osservazioni azzerate
+    vm.proposal["enforced_at"] = (T0 + datetime.timedelta(hours=1)).isoformat()
+    store.save_vm(vm)                        # nuova applicazione
+    store.record_many([drop(61, "10.0.0.2", 22)])
+
+    [(_, again)] = det.tick()
+    assert again.id == alert.id and again.status == "open"
+    assert again.count == 1
+
+
 def test_cli_alerts(store, vm, det, tmp_path, monkeypatch):
     store.record_many([drop(i, "10.0.0.5", 873) for i in range(6)])
     det.tick()

@@ -80,12 +80,19 @@ class Enforcer:
             LOG.info("%s: security group della porta sostituiti con %s",
                      vm.name, learned_group_name(vm.name))
 
+        changed = vm.learned_sg_id != sg_id
         if not vm.enforce_log_ids:
             vm.enforce_log_ids = self.cloud.enable_logging(
                 [sg_id], vm.project_id, name=f"sg-learner-{vm.name}-drop",
                 event=LOG_EVENT_DROP)
+            changed = True
 
         first_time = vm.state != lifecycle.ENFORCING
+        if not (first_time or changed):
+            # Riconciliazione senza novita' nel database: non si salva, cosi'
+            # un comando della CLI lanciato in questo momento non va in
+            # conflitto con il servizio (caso visto con la demo: rollback).
+            return vm
         if first_time:
             # Da qui in avanti i DROP sono di competenza dell'Anomaly Detector
             vm.proposal["enforced_at"] = datetime.datetime.now(
@@ -177,6 +184,20 @@ class Enforcer:
         La VM torna in stato PROPOSED con la stessa proposta: si puo'
         riapprovare, oppure ripetere l'osservazione con learn.
         """
+        # Se il servizio salva la stessa VM proprio in questo momento il
+        # salvataggio fallisce (ConflictError): le operazioni su Neutron sono
+        # idempotenti, quindi si rilegge la VM e si ripete.
+        for attempt in range(3):
+            try:
+                return self._rollback(name_or_id)
+            except ConflictError:
+                if attempt == 2:
+                    raise
+                LOG.info("%s modificata dal servizio durante il rollback:"
+                         " ripeto", name_or_id)
+        return None
+
+    def _rollback(self, name_or_id):
         vm = self.store.get_vm(name_or_id)
         if vm is None or vm.state != lifecycle.ENFORCING:
             raise lifecycle.LifecycleError(
