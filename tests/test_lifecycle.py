@@ -183,6 +183,22 @@ def test_cli_reports_errors(run_cli, capsys):
     assert "non e' seguita" in capsys.readouterr().err
 
 
+def test_cli_without_openrc_explains_what_to_do(tmp_path, monkeypatch, capsys):
+    """Caso visto dal vivo: senza `source openrc` il comando stampava un
+    traceback di keystoneauth invece di un messaggio comprensibile."""
+    from keystoneauth1.exceptions.auth_plugins import MissingRequiredOptions
+    from sg_learner import cli
+
+    def no_credentials():
+        raise MissingRequiredOptions([])
+    monkeypatch.setattr(cli.openstack, "connect", no_credentials)
+    conf = tmp_path / "sg-learner.conf"
+    conf.write_text(f"[DEFAULT]\ndata_dir = {tmp_path}\n")
+
+    assert cli.main(["--config-file", str(conf), "status"]) == 1
+    assert "source /opt/stack/devstack/openrc" in capsys.readouterr().err
+
+
 # --- Avvio del servizio quando OpenStack non e' ancora pronto -----------------
 
 def test_service_retries_until_openstack_is_ready(monkeypatch):

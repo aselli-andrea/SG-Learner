@@ -23,6 +23,8 @@ import os
 import sys
 
 import openstack
+from keystoneauth1 import exceptions as auth_exceptions
+from openstack import exceptions as sdk_exceptions
 
 from sg_learner import detector, engine, lifecycle
 from sg_learner.cloud import Cloud
@@ -118,7 +120,16 @@ def main(argv=None, conn=None, out=sys.stdout):
 
     store = FlowStore(os.path.join(data_dir, DB_FILE))
     try:
-        cloud = Cloud(conn or openstack.connect())
+        if conn is None:
+            try:
+                conn = openstack.connect()
+            except (auth_exceptions.auth_plugins.MissingRequiredOptions,
+                    sdk_exceptions.ConfigException):
+                print("Errore: credenziali di OpenStack mancanti. Eseguire"
+                      " prima: source /opt/stack/devstack/openrc admin admin",
+                      file=sys.stderr)
+                return 1
+        cloud = Cloud(conn)
         manager = lifecycle.Lifecycle(store, cloud,
                                       engine.options_from_config(conf))
 

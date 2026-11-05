@@ -141,6 +141,7 @@ cmd_setup() {
             --description "'Demo SG-Learner: gruppo permissivo iniziale'" -f value -c id
         show openstack security group rule create "$SG_OPEN" --protocol icmp -f value -c id
         show openstack security group rule create "$SG_OPEN" --protocol tcp --dst-port 1:65535 -f value -c id
+        show openstack security group rule create "$SG_OPEN" --protocol udp --dst-port 1:65535 -f value -c id
     else
         say "$SG_OPEN esiste gia'"
     fi
@@ -266,6 +267,9 @@ cmd_run() {
     show "vmssh vm-app 'for i in 1 2 3 4 5; do nc -w 3 ${IP[vm-web]} 80; done'"
     say "vm-web chiama 5 volte il database"
     show "vmssh vm-web 'for i in 1 2 3 4 5; do nc -w 3 ${IP[vm-db]} 5432; done'"
+    say "UDP: vm-web manda 5 datagrammi a vm-db sulla porta 53, vm-app fa 5 query DNS verso 8.8.8.8"
+    show "vmssh vm-web 'for i in 1 2 3 4 5; do echo ciao | nc -u -w 1 ${IP[vm-db]} 53; done'"
+    show "vmssh vm-app 'for i in 1 2 3 4 5; do nslookup openstack.org 8.8.8.8 > /dev/null 2>&1; done'"
     say "5 client esterni diversi chiamano il web server (indirizzi temporanei su br-ex)"
     if external_ips_free; then
         local ip
