@@ -16,6 +16,8 @@ from openstack import exceptions
 
 LOG = logging.getLogger(__name__)
 
+# Eventi del Packet Logging: ALL durante l'osservazione (traffico permesso
+# e bloccato), DROP dopo l'applicazione (solo bloccato, per il Detector)
 LOG_EVENT_ALL = "ALL"
 LOG_EVENT_DROP = "DROP"
 
@@ -50,6 +52,7 @@ class Cloud:
         ports = list(self.conn.network.ports(device_id=server.id))
         if not ports:
             raise LookupError(f"La VM {server.name} non ha porte di rete")
+        # Limite noto: con piu' interfacce si segue solo la prima
         port = ports[0]
         if len(ports) > 1:
             LOG.warning("La VM %s ha %d porte: uso %s", server.name,
@@ -73,6 +76,8 @@ class Cloud:
         ip_to_group, group_to_server = {}, {}
         for port in self.conn.network.ports():
             server_id = port.device_id
+            # Solo porte di VM: si saltano router, DHCP, metadata e la VM
+            # di cui si sta generando la proposta
             if (not (port.device_owner or "").startswith("compute:")
                     or server_id == exclude_server_id
                     or server_id not in names):
@@ -149,6 +154,8 @@ class Cloud:
 
     def _request(self, method, path, **kwargs):
         response = self.conn.network.request(path, method, **kwargs)
+        # Trasforma gli errori HTTP (404, 409...) nelle eccezioni di
+        # openstacksdk, come per le altre chiamate
         exceptions.raise_from_response(response)
         return response.json() if response.content else None
 
@@ -185,4 +192,4 @@ class Cloud:
             try:
                 self._request("DELETE", f"/log/logs/{log_id}")
             except exceptions.NotFoundException:
-                pass
+                pass        # gia' cancellato: va bene lo stesso

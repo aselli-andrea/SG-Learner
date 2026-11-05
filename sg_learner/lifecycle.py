@@ -78,6 +78,8 @@ class Lifecycle:
         log_ids = self.cloud.enable_logging(
             port.security_group_ids, port.project_id,
             name=f"sg-learner-{port.server_name}")
+        # Si riparte da zero: le osservazioni vecchie non entrano nella
+        # nuova proposta
         self.store.forget(port.mac)
         # Se la VM era gia' seguita, i gruppi "originali" (per il rollback)
         # e il gruppo learned restano quelli di prima
@@ -107,6 +109,8 @@ class Lifecycle:
         return self._propose(vm, now or _now())
 
     def _propose(self, vm, now):
+        # IP delle altre VM -> loro gruppo: serve al Policy Engine per
+        # scrivere regole remote_group invece di singoli indirizzi
         ip_to_group, group_to_server = self.cloud.vm_groups_by_ip(
             exclude_server_id=vm.server_id)
         proposal = engine.build_proposal(
@@ -116,8 +120,10 @@ class Lifecycle:
             "generated_at": now.isoformat(),
             "total_connections": proposal.total_connections,
             "rules": [dataclasses.asdict(r) for r in proposal.rules],
+            # Per ogni gruppo citato, la VM che ne fara' parte (Enforcer)
             "vm_groups": {r.remote_group: group_to_server[r.remote_group]
                           for r in proposal.rules if r.remote_group},
+            # Nel testo per l'amministratore il MAC diventa nome e IP
             "summary": proposal.summary().replace(
                 f"Proposta per {proposal.vm_ip or vm.mac}",
                 f"Proposta per {vm.name} ({vm.ip})", 1),

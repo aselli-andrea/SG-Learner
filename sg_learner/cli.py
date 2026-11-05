@@ -31,6 +31,7 @@ from sg_learner.cloud import Cloud
 from sg_learner.enforcer import Enforcer
 from sg_learner.store import ConflictError, FlowStore
 
+# File di configurazione scritto dal plugin DevStack (devstack/plugin.sh)
 DEFAULT_CONFIG = "/etc/sg-learner/sg-learner.conf"
 DEFAULT_DATA_DIR = "/opt/stack/data/sg-learner"
 DB_FILE = "sg-learner.db"
@@ -42,6 +43,7 @@ def _local(ts):
 
 
 def print_status(vms, out=sys.stdout):
+    """Tabella di `sg-learner status`: una riga per VM seguita."""
     if not vms:
         print("Nessuna VM seguita. Usa: sg-learner learn <vm>", file=out)
         return
@@ -50,6 +52,7 @@ def print_status(vms, out=sys.stdout):
           " REGOLE", file=out)
     for vm in vms:
         until = _local(vm.learn_until)
+        # Durante l'osservazione si mostrano anche i minuti che mancano
         if vm.state == lifecycle.LEARNING and vm.learn_until:
             minutes = max(0, int((vm.learn_until - now).total_seconds() // 60))
             until += f" ({minutes} min)"
@@ -59,6 +62,7 @@ def print_status(vms, out=sys.stdout):
 
 
 def print_alerts(alerts, names, out=sys.stdout):
+    """Tabella di `sg-learner alerts list`; names traduce ID VM -> nome."""
     if not alerts:
         print("Nessuna anomalia aperta.", file=out)
         return
@@ -71,10 +75,13 @@ def print_alerts(alerts, names, out=sys.stdout):
 
 
 def build_parser():
+    """Definisce comandi e opzioni della riga di comando (argparse)."""
     parser = argparse.ArgumentParser(
         prog="sg-learner",
         description="SG-Learner: security group appresi dal traffico reale")
     parser.add_argument("--config-file", default=DEFAULT_CONFIG)
+    # Un sottocomando per ogni operazione: learn, status, rollback,
+    # alerts (list/accept/dismiss) e proposal (generate/show/approve)
     sub = parser.add_subparsers(dest="command", required=True)
 
     learn = sub.add_parser("learn", help="avvia l'osservazione di una VM")
@@ -110,17 +117,28 @@ def build_parser():
 
 
 def main(argv=None, conn=None, out=sys.stdout):
+    """Punto di ingresso del comando. Restituisce 0 se va tutto bene.
+
+    conn e out servono ai test: una connessione finta a OpenStack e un
+    output da controllare al posto dello schermo.
+    """
     args = build_parser().parse_args(argv)
 
+    # Configurazione: cartella dei dati, durata predefinita
+    # dell'osservazione e soglie del Policy Engine e del Detector
     conf = configparser.ConfigParser()
     conf.read(args.config_file)
     data_dir = conf.get("DEFAULT", "data_dir", fallback=DEFAULT_DATA_DIR)
     default_duration = conf.get("DEFAULT", "learn_duration",
                                 fallback=str(lifecycle.DEFAULT_LEARN_DURATION))
 
+    # Stesso database del servizio: la CLI scrive le decisioni
+    # dell'amministratore, il servizio le applica al giro successivo
     store = FlowStore(os.path.join(data_dir, DB_FILE))
     try:
         if conn is None:
+            # Credenziali dalle variabili OS_* di openrc: senza openrc si
+            # da' un messaggio chiaro invece di un traceback
             try:
                 conn = openstack.connect()
             except (auth_exceptions.auth_plugins.MissingRequiredOptions,
@@ -168,6 +186,7 @@ def main(argv=None, conn=None, out=sys.stdout):
                 anomalies.dismiss(args.id)
                 print(f"Anomalia {args.id} ignorata.", file=out)
 
+        # Da qui in poi il comando e' "proposal"
         elif args.action == "generate":
             vm = manager.generate(args.vm)
             print(vm.proposal["summary"], file=out)
@@ -186,6 +205,8 @@ def main(argv=None, conn=None, out=sys.stdout):
             print(f"Proposta per {vm.name} approvata: il servizio la"
                   " applichera' entro 30 secondi.", file=out)
 
+    # Errori previsti (VM non trovata, stato sbagliato, durata non valida,
+    # modifica concorrente del servizio): messaggio breve e codice 1
     except (lifecycle.LifecycleError, ConflictError, LookupError,
             ValueError) as error:
         print(f"Errore: {error}", file=sys.stderr)

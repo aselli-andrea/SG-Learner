@@ -39,6 +39,7 @@ class FakeCloud:
 
 
 def flow(minutes, remote, port, verdict="allow"):
+    """Una connessione TCP in ingresso verso vm-web, `minutes` dopo T0."""
     return collector.Flow(
         timestamp=T0 + datetime.timedelta(minutes=minutes),
         log_name="neutron-log", verdict=verdict,
@@ -144,6 +145,7 @@ def test_learn_unknown_vm(manager):
 
 @pytest.fixture
 def run_cli(tmp_path, cloud, monkeypatch):
+    """Esegue il CLI con un database temporaneo e il cloud finto."""
     conf = tmp_path / "sg-learner.conf"
     conf.write_text(f"[DEFAULT]\ndata_dir = {tmp_path}\n")
     monkeypatch.setattr(cli, "Cloud", lambda conn: cloud)

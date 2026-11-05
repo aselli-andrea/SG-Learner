@@ -139,18 +139,22 @@ class Enforcer:
         return groups
 
     def _desired_rules(self, vm, groups):
+        """Regole che il gruppo learned deve avere, nel formato di Neutron."""
         rules = []
         proposed = [engine.ProposedRule(**rule)
                     for rule in vm.proposal["rules"]]
         for rule in proposed + list(engine.BASE_RULES):
             neutron = {field: None for field in _RULE_FIELDS}
             neutron.update(rule.to_neutron())
+            # Nella proposta il gruppo e' un nome logico ("vm:vm-web"):
+            # qui diventa l'ID reale del security group su Neutron
             if neutron.get("remote_group_id"):
                 neutron["remote_group_id"] = groups[neutron["remote_group_id"]]
             rules.append(neutron)
         return rules
 
     def _sync_rules(self, vm, sg_id, groups):
+        """Allinea le regole del gruppo: cancella le estranee, crea le mancanti."""
         desired = {_rule_key(r): r for r in self._desired_rules(vm, groups)}
         existing = {_rule_key(r): r for r in
                     self.cloud.security_group_rules(sg_id)}

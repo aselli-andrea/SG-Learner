@@ -23,5 +23,7 @@ SG_LEARNER_OVN_LOG=${SG_LEARNER_OVN_LOG:-/var/log/ovn/ovn-controller.log}
 
 # Packet Logging di Neutron (valori minimi indicati dalla documentazione)
 SG_LEARNER_ML2_CONF=${SG_LEARNER_ML2_CONF:-/etc/neutron/plugins/ml2/ml2_conf.ini}
+# rate_limit: pacchetti registrati al secondo. Valori piu' alti perdono meno
+# connessioni con traffico intenso, a costo di piu' CPU per ovn-controller
 SG_LEARNER_LOG_RATE_LIMIT=${SG_LEARNER_LOG_RATE_LIMIT:-100}
 SG_LEARNER_LOG_BURST_LIMIT=${SG_LEARNER_LOG_BURST_LIMIT:-25}

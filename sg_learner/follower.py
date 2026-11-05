@@ -82,6 +82,7 @@ class LogFollower:
     def _open(self, path, offset):
         self.close()
         try:
+            # Lettura in binario: l'offset e' in byte, come st_size
             self._file = open(path, "rb")
         except FileNotFoundError:
             return False
@@ -159,6 +160,8 @@ class LogFollower:
         else:
             data = self._partial + data
 
+        # L'ultimo pezzo dopo l'ultimo "\n" e' una riga non ancora finita
+        # (o vuoto): resta da parte per il giro successivo
         *complete, self._partial = data.split(b"\n")
         if complete or data:
             self._save()

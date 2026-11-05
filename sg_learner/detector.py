@@ -115,6 +115,8 @@ class AnomalyDetector:
                     first_seen=min(o.first_seen for o in items),
                     last_seen=max(o.last_seen for o in items),
                     ports=len(ports), reopen_before=since)
+                # reopen_before: un'anomalia chiusa in un periodo di
+                # applicazione precedente torna aperta (vedi sopra)
                 if is_new:
                     new.append(alert)
                 self._absorb_into_scan(vm, direction, remote)
@@ -187,6 +189,8 @@ class AnomalyDetector:
                      o.remote_ip) == (alert.direction, alert.protocol,
                                       alert.service_port, alert.icmp_type,
                                       alert.remote_ip)]
+        # Gli stessi DROP, trattati come traffico permesso: cosi' il Policy
+        # Engine costruisce la regola con le stesse logiche della proposta
         allowed = [dataclasses.replace(o, verdict="allow") for o in drops]
 
         ip_to_group, group_to_server = ({}, {})
@@ -198,6 +202,7 @@ class AnomalyDetector:
         rules = vm.proposal.setdefault("rules", [])
         for rule in proposal.rules:
             as_dict = dataclasses.asdict(rule)
+            # Si aggiunge solo se la proposta non ha gia' una regola uguale
             if not any(_same_rule(as_dict, r) for r in rules):
                 rules.append(as_dict)
             if rule.remote_group:
@@ -214,6 +219,7 @@ class AnomalyDetector:
 
 
 def _same_rule(a, b):
+    """Due regole (dizionari) permettono lo stesso traffico."""
     fields = ("direction", "protocol", "port", "icmp_type",
               "remote_ip_prefix", "remote_group")
     return all(a.get(f) == b.get(f) for f in fields)

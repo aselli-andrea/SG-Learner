@@ -15,6 +15,7 @@ T0 = datetime.datetime(2026, 10, 23, 12, 0, tzinfo=datetime.timezone.utc)
 
 def obs(direction="ingress", protocol="tcp", port=22, remote="172.24.4.1",
         verdict="allow", count=10, icmp_type=None, mac=VM_MAC, vm_ip=VM_IP):
+    """Una riga del Flow Store; i valori predefiniti sono SSH dall'host."""
     return Observation(
         vm_mac=mac, vm_ip=vm_ip, direction=direction, protocol=protocol,
         service_port=port, icmp_type=icmp_type, remote_ip=remote,
@@ -23,6 +24,7 @@ def obs(direction="ingress", protocol="tcp", port=22, remote="172.24.4.1",
 
 
 def described(proposal):
+    """Regole della proposta come (descrizione, connessioni), da confrontare."""
     return [(r.describe(), r.connections) for r in proposal.rules]
 
 

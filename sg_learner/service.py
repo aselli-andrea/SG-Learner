@@ -35,6 +35,8 @@ from sg_learner.store import FlowStore
 LOG = logging.getLogger("sg_learner")
 
 DEFAULT_CONFIG = "/etc/sg-learner/sg-learner.conf"
+# Ogni 30 s: riepilogo, ciclo di vita, Enforcer e Detector.
+# Ogni 2 s: lettura delle righe nuove del log di OVN.
 DEFAULT_INTERVAL = 30
 DEFAULT_POLL_INTERVAL = 2
 DEFAULT_OVN_LOG = "/var/log/ovn/ovn-controller.log"
@@ -135,6 +137,8 @@ class CollectionWorker:
         lines = self.follower.read_new_lines()
         if not lines:
             return 0
+        # Si tiene solo il primo pacchetto di ogni connessione, e lo stesso
+        # flusso ripetuto entro dedup_window secondi conta una volta sola
         flows = [f for f in collector.parse_lines(lines)
                  if f.is_connection_start and self.dedup.is_new(f)]
         saved = self.store.record_many(flows)
@@ -165,6 +169,8 @@ def main(argv=None):
     ovn_log = conf.get("DEFAULT", "ovn_log_file", fallback=DEFAULT_OVN_LOG)
     data_dir = conf.get("DEFAULT", "data_dir", fallback=DEFAULT_DATA_DIR)
 
+    # systemctl stop manda SIGTERM: il ciclo finisce il giro in corso e
+    # chiude il database in modo pulito
     stopping = False
 
     def _stop(signum, _frame):
@@ -194,6 +200,8 @@ def main(argv=None):
     anomalies = detector.AnomalyDetector(
         store, cloud, **detector.options_from_config(conf))
 
+    # Ciclo principale. Ogni fase ha il suo try/except: un errore in una
+    # (es. Neutron non risponde) viene registrato ma non ferma le altre
     next_report = time.monotonic() + interval
     while not stopping:
         try:

@@ -18,6 +18,7 @@ _XTRACE_SG_LEARNER=$(set +o | grep xtrace)
 set +o xtrace
 
 
+# Installazione in modalita' sviluppo (pip install -e) nel venv di DevStack
 function install_sg_learner {
     setup_develop $SG_LEARNER_DIR
 }
@@ -69,6 +70,7 @@ function configure_sg_learner_conf {
     iniset $SG_LEARNER_CONF openstack project_domain_name $SERVICE_DOMAIN_NAME
     iniset $SG_LEARNER_CONF openstack region_name $REGION_NAME
 
+    # Il file contiene la password dell'utente di servizio
     chmod 640 $SG_LEARNER_CONF
 }
 
@@ -79,6 +81,7 @@ function configure_sg_learner {
     configure_sg_learner_conf
 }
 
+# run_process crea l'unita' systemd devstack@sg-learner
 function start_sg_learner {
     run_process sg-learner "$(get_python_exec_prefix)/sg-learner-service --config-file $SG_LEARNER_CONF"
 }

@@ -90,13 +90,14 @@ class Flow:
         if self.protocol in _ICMP_ECHO_REQUEST:
             return self.icmp_type == _ICMP_ECHO_REQUEST[self.protocol]
         if self.protocol == "udp":
-            return True
+            return True     # UDP non ha handshake: decide il deduplicator
         return False
 
     @property
     def connection_key(self):
         """Identifica una connessione, per riconoscere le ritrasmissioni."""
         if self.protocol in _ICMP_ECHO_REQUEST:
+            # ICMP non ha porte: si usa il tipo al loro posto
             return (self.direction, self.protocol, self.src_ip, self.dst_ip,
                     self.icmp_type)
         return (self.direction, self.protocol, self.src_ip, self.src_port,
@@ -146,6 +147,8 @@ def parse_line(line):
     if not match:
         return None
 
+    # Il corpo ha due parti separate da ": ": l'intestazione dell'ACL
+    # (nome del log, verdetto, direzione) e la descrizione del pacchetto
     body = match.group("body")
     header, sep, packet = body.partition(": ")
     if not sep:
@@ -162,6 +165,7 @@ def parse_line(line):
 
     packet_type, _, rest = packet.partition(",")
     fields = _parse_fields(rest)
+    # nw_* per IPv4, ipv6_* per IPv6
     src_ip = fields.get("nw_src") or fields.get("ipv6_src")
     dst_ip = fields.get("nw_dst") or fields.get("ipv6_dst")
     if not src_ip or not dst_ip:

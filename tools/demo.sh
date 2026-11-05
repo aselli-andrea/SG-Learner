@@ -19,6 +19,7 @@
 
 set -u
 
+# Valori della demo; le variabili DEMO_* si possono cambiare da fuori
 VMS="vm-web vm-db vm-app"
 SG_OPEN=demo-open
 FLAVOR=${DEMO_FLAVOR:-m1.tiny}
@@ -81,6 +82,7 @@ vmssh() {
         "cirros@${FIP[$vm]}" "$@"
 }
 
+# Stato di una VM nella tabella di `sg-learner status` (terza colonna)
 vm_state() { "$SG_LEARNER" status | awk -v v="$1" '$1==v {print $3}'; }
 
 wait_state() {   # wait_state <stato> <secondi>
@@ -98,6 +100,8 @@ wait_state() {   # wait_state <stato> <secondi>
 probe() {   # probe <descrizione> <atteso: passa|bloccato> <comando...>
     local what=$1 expected=$2; shift 2
     local out got
+    # I servizi della demo rispondono con il nome della VM e il ping
+    # stampa la riga "0% packet loss": output vuoto = traffico bloccato
     out=$(eval "$*" 2>/dev/null)
     if [[ -n $out ]]; then got=passa; else got=bloccato; fi
     if [[ $got == "$expected" ]]; then
@@ -122,6 +126,7 @@ for ip, d, p, port, remote, v, n in db.execute(
 EOF
 }
 
+# Gli IP dei client esterni non devono essere floating IP gia' assegnati
 external_ips_free() {
     local used ip
     used=$(openstack floating ip list -f value -c "Floating IP Address")
@@ -273,6 +278,9 @@ cmd_run() {
     say "5 client esterni diversi chiamano il web server (indirizzi temporanei su br-ex)"
     if external_ips_free; then
         local ip
+        # Ogni client e' un indirizzo aggiunto per un attimo all'host:
+        # nc -s lo usa come sorgente, cosi' vm-web vede 5 IP esterni diversi
+        # e il Policy Engine riconosce un servizio pubblico (0.0.0.0/0)
         for ip in $EXTERNAL_IPS; do
             sudo ip addr add "$ip/24" dev br-ex
             echo -n "  client $ip -> "; nc -s "$ip" -w 3 "${FIP[vm-web]}" 80
@@ -314,6 +322,8 @@ cmd_run() {
     pause
 
     title "5 · Anomaly Detector: vm-app scansiona il database"
+    # 6 porte mai osservate + la 5432 gia' bloccata nel test: 7 porte
+    # diverse dallo stesso IP, sopra la soglia di 5: e' una scan
     show "vmssh vm-app 'for p in 21 22 23 80 443 3306; do nc -w 2 ${IP[vm-db]} \$p < /dev/null; done' 2>/dev/null"
     say "Attendo il giro del detector (35 secondi)..."
     sleep 35
@@ -339,6 +349,7 @@ cmd_run() {
 
 # --- main ------------------------------------------------------------------------
 
+# Senza comando valido stampa l'aiuto (le righe 2-19 di questo file)
 if [[ ${1:-} == --no-pause ]]; then PAUSE=0; shift; fi
 case "${1:-}" in
     setup)    cmd_setup ;;

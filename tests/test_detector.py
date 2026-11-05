@@ -14,6 +14,7 @@ MAC = "fa:16:3e:00:00:01"
 
 def drop(minutes, remote, port, protocol="tcp", direction="ingress",
          verdict="drop"):
+    """Un tentativo bloccato verso/da vm-web, `minutes` dopo T0."""
     ingress = direction == collector.INGRESS
     return collector.Flow(
         timestamp=T0 + datetime.timedelta(minutes=minutes),
@@ -36,6 +37,7 @@ def store(tmp_path):
 
 @pytest.fixture
 def vm(store):
+    # vm-web gia' applicata a T0: contano solo i DROP successivi
     record = VmRecord(
         server_id="srv-web", name="vm-web", project_id="demo",
         port_id="port-web", mac=MAC, ip="10.0.0.10",

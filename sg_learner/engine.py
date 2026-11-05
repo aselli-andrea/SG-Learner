@@ -33,9 +33,10 @@ import ipaddress
 
 from sg_learner.collector import INGRESS
 
-DEFAULT_PUBLIC_THRESHOLD = 5
-DEFAULT_MIN_CONNECTIONS = 1
-DEFAULT_LOW_CONFIDENCE_BELOW = 3
+# Valori predefiniti, modificabili nella sezione [engine] della configurazione
+DEFAULT_PUBLIC_THRESHOLD = 5        # IP esterni distinti -> servizio pubblico
+DEFAULT_MIN_CONNECTIONS = 1         # sotto questa soglia nessuna regola
+DEFAULT_LOW_CONFIDENCE_BELOW = 3    # sotto questa soglia "poco osservata"
 
 _DHCP_PORTS = {67, 68, 546, 547}
 _ICMPV6_NEIGHBOR_DISCOVERY = {133, 134, 135, 136, 137}
@@ -183,6 +184,8 @@ def build_proposal(observations, vm_mac, ip_to_group=None,
 
     blocked, excluded = [], []
     groups = collections.defaultdict(list)
+    # Punti 1-3: si scarta l'infrastruttura, si mette da parte il bloccato
+    # e si raggruppa il resto per direzione, protocollo e porta
     for obs in mine:
         reason = _exclusion_reason(obs)
         if reason:
@@ -205,6 +208,7 @@ def build_proposal(observations, vm_mac, ip_to_group=None,
     rules.sort(key=lambda r: (r.direction != INGRESS, r.protocol,
                               r.port if r.port is not None else -1,
                               r.remote_group or "", r.remote_ip_prefix or ""))
+    # 0.0.0.0 e' l'IP della VM durante la richiesta DHCP: non e' quello vero
     vm_ip = next((o.vm_ip for o in mine if o.vm_ip != "0.0.0.0"), None)
     return Proposal(
         vm_mac=vm_mac,
@@ -219,6 +223,7 @@ def build_proposal(observations, vm_mac, ip_to_group=None,
 def _rules_for_group(direction, protocol, port, icmp_type, ethertype,
                      obs_list, ip_to_group, public_threshold,
                      min_connections, low_confidence_below):
+    """Punto 4: le regole per un gruppo (direzione, protocollo, porta)."""
     def make(prefix, group, members):
         count = sum(o.count for o in members)
         return ProposedRule(
@@ -230,6 +235,7 @@ def _rules_for_group(direction, protocol, port, icmp_type, ethertype,
             low_confidence=count < low_confidence_below,
         )
 
+    # Gli altri capi si dividono in VM del cloud (per gruppo) ed esterni
     by_group = collections.defaultdict(list)
     external = []
     for obs in obs_list:

@@ -98,6 +98,7 @@ class FakeNeutron:
 
 def obs(port, remote, direction="ingress", protocol="tcp", icmp_type=None,
         mac="fa:16:3e:00:00:01", count=10):
+    """Una riga del Flow Store per vm-web (o per il MAC indicato)."""
     return Observation(
         vm_mac=mac, vm_ip="10.0.0.10", direction=direction,
         protocol=protocol, service_port=port, icmp_type=icmp_type,
@@ -122,6 +123,7 @@ def approved_vm(store, port, observations, ip_to_group=None,
 
 
 def rules_of(neutron, sg_id):
+    """Regole di un gruppo come tuple ordinate, facili da confrontare."""
     return sorted(
         (r["direction"], r["protocol"], r["port_range_min"],
          r["remote_ip_prefix"], r["remote_group_id"])
@@ -146,6 +148,7 @@ def enforcer(store, neutron):
 
 @pytest.fixture
 def web(store, neutron):
+    # vm-web approvata con SSH e ping dall'host e il metadata in uscita
     return approved_vm(store, neutron.vms["srv-web"], [
         obs(22, "172.24.4.1"),
         obs(None, "172.24.4.1", protocol="icmp", icmp_type=8),

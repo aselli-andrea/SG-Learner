@@ -94,6 +94,8 @@ CREATE TABLE IF NOT EXISTS alerts (
 );
 """
 
+# Una connessione nuova crea la riga con count=1; se la riga esiste gia'
+# (stessa chiave primaria) si incrementa count e si aggiornano gli orari
 _UPSERT = """
 INSERT INTO observations (vm_mac, direction, protocol, service_port,
                           icmp_type, remote_ip, verdict, vm_ip, count,
@@ -166,7 +168,7 @@ class Alert:
     ports: int             # porte distinte (per kind=scan)
     first_seen: datetime.datetime
     last_seen: datetime.datetime
-    status: str            # open, accepted, dismissed
+    status: str            # open, accepted, dismissed, in_scan
 
 
 def _to_db(value):
@@ -178,6 +180,8 @@ def _from_db(value):
 
 
 def _ts_to_db(value):
+    # Sempre in UTC e in formato ISO: cosi' il confronto tra stringhe in
+    # SQL (es. last_seen >= ?) equivale al confronto tra istanti
     return value.astimezone(datetime.timezone.utc).isoformat()
 
 
@@ -203,6 +207,7 @@ class FlowStore:
         if self.path != ":memory:":
             # WAL: le letture (API) non bloccano le scritture (collector)
             self._db.execute("PRAGMA journal_mode=WAL")
+        # CREATE ... IF NOT EXISTS: su un database esistente non cambia nulla
         self._db.executescript(_SCHEMA)
         self._migrate()
         self._db.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
@@ -247,6 +252,7 @@ class FlowStore:
 
         Restituisce il numero di connessioni registrate.
         """
+        # dst_port del primo pacchetto = porta di servizio (vedi sopra)
         rows = [
             (f.vm_mac, f.direction, f.protocol, _to_db(f.dst_port),
              _to_db(f.icmp_type), f.remote_ip, f.verdict, f.vm_ip,
@@ -334,6 +340,7 @@ class FlowStore:
         """
         previous = vm.updated_at
         now = datetime.datetime.now(datetime.timezone.utc)
+        # Le liste e la proposta sono salvate come testo JSON
         values = (vm.name, vm.project_id, vm.port_id, vm.mac, vm.ip,
                   vm.state, json.dumps(vm.security_groups),
                   json.dumps(vm.log_ids), _opt_ts_to_db(vm.learn_started),
@@ -344,6 +351,7 @@ class FlowStore:
                   json.dumps(vm.enforce_log_ids))
         with self._transaction() as db:
             if previous is not None:
+                # Aggiorna solo se updated_at e' ancora quello letto
                 updated = db.execute(
                     "UPDATE vms SET name = ?, project_id = ?, port_id = ?,"
                     " mac = ?, ip = ?, state = ?, security_groups = ?,"
@@ -355,6 +363,8 @@ class FlowStore:
                 if updated:
                     vm.updated_at = now
                     return
+                # Nessuna riga aggiornata: o la VM e' cambiata (conflitto)
+                # o non esiste piu', e allora si reinserisce sotto
                 if db.execute("SELECT 1 FROM vms WHERE server_id = ?",
                               (vm.server_id,)).fetchone():
                     raise ConflictError(
@@ -423,6 +433,8 @@ class FlowStore:
             " remote_ip = ?", key).fetchone()
         reopened = False
         with self._transaction() as db:
+            # Tre casi: anomalia nuova, chiusa di un periodo precedente
+            # (si riapre), gia' nota (si aggiornano solo i conteggi)
             if existing is None:
                 db.execute(
                     "INSERT INTO alerts (server_id, kind, direction, protocol,"
@@ -446,6 +458,8 @@ class FlowStore:
                 db.execute(
                     "UPDATE alerts SET kind = ?, count = ?, ports = ?,"
                     " last_seen = ? WHERE id = ?",
+                    # Un'anomalia chiusa mantiene il tipo con cui e' stata
+                    # gestita, anche se nel frattempo e' cambiato
                     (kind if existing["status"] == "open"
                      else existing["kind"], count, ports,
                      _ts_to_db(last_seen), existing["id"]))

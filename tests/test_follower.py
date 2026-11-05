@@ -26,6 +26,7 @@ def log(tmp_path):
 
 
 def append(path, text):
+    """Aggiunge testo al log, come farebbe ovn-controller."""
     with open(path, "a") as f:
         f.write(text)
 
