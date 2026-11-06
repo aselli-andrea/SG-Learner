@@ -15,9 +15,14 @@ SG-Learner interessa contare le connessioni:
 
 - TCP: conta solo il pacchetto syn senza ack;
 - ICMP: conta solo la echo request (tipo 8, o 128 per ICMPv6);
-- UDP: ogni datagramma puo' aprire un flusso;
+- UDP: ogni datagramma puo' aprire un flusso, tranne le risposte;
 - le ritrasmissioni e i pacchetti ripetuti vengono scartati dal
   ConnectionDeduplicator, che raggruppa per 5-tupla in una finestra di tempo.
+  Per l'UDP scarta anche le risposte: un datagramma che fa la strada
+  inversa di uno visto da poco (es. la risposta DNS, da 8.8.8.8:53 verso
+  la porta casuale da cui la VM ha fatto la query). Senza questo controllo
+  ogni risposta diventerebbe una "connessione" in ingresso su una porta
+  casuale (osservato dal vivo nell'installazione da zero del 06/11).
 """
 
 import dataclasses
@@ -202,18 +207,38 @@ def parse_lines(lines):
             yield flow
 
 
+def _udp_endpoints(flow):
+    """(IP e porta sorgente, IP e porta destinazione) di un datagramma."""
+    return (flow.src_ip, flow.src_port), (flow.dst_ip, flow.dst_port)
+
+
 class ConnectionDeduplicator:
     """Scarta le ritrasmissioni dello stesso tentativo di connessione.
 
     Un pacchetto con la stessa connection_key di uno visto meno di
-    `window` secondi prima viene considerato una ripetizione.
+    `window` secondi prima viene considerato una ripetizione. Per l'UDP
+    viene scartata anche la risposta a un datagramma visto meno di
+    `window` secondi prima (sorgente e destinazione scambiate).
     """
 
     def __init__(self, window=60):
         self.window = datetime.timedelta(seconds=window)
         self._last_seen = {}
+        # Datagrammi UDP recenti: (sorgente, destinazione) -> ultimo istante
+        self._udp_seen = {}
+
+    def _is_udp_reply(self, flow):
+        src, dst = _udp_endpoints(flow)
+        request = self._udp_seen.get((dst, src))
+        return (request is not None
+                and flow.timestamp - request <= self.window)
 
     def is_new(self, flow):
+        if flow.protocol == "udp":
+            reply = self._is_udp_reply(flow)
+            self._udp_seen[_udp_endpoints(flow)] = flow.timestamp
+            if reply:
+                return False
         key = flow.connection_key
         previous = self._last_seen.get(key)
         self._last_seen[key] = flow.timestamp
@@ -224,6 +249,9 @@ class ConnectionDeduplicator:
         limit = now - self.window
         self._last_seen = {
             key: seen for key, seen in self._last_seen.items() if seen >= limit
+        }
+        self._udp_seen = {
+            key: seen for key, seen in self._udp_seen.items() if seen >= limit
         }
 
 

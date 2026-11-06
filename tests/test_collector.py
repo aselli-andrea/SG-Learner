@@ -149,6 +149,41 @@ def test_same_connection_after_window_counts_again():
     assert dedup.is_new(later)
 
 
+def _dns(ts, direction, src, sport, dst, dport):
+    """Un datagramma DNS tra vm-app (10.0.0.50) e 8.8.8.8, come nel log."""
+    vm_mac, gw_mac = "fa:16:3e:00:00:50", "fa:16:3e:00:00:01"
+    macs = (vm_mac, gw_mac) if direction == "from-lport" else (gw_mac, vm_mac)
+    return (
+        f"2026-11-06T15:28:{ts}Z|00200|acl_log(ovn_pinctrl0)|INFO|"
+        'name="neutron-test", verdict=allow, severity=info, '
+        f"direction={direction}: udp,vlan_tci=0x0000,dl_src={macs[0]},"
+        f"dl_dst={macs[1]},nw_src={src},nw_dst={dst},nw_tos=0,nw_ecn=0,"
+        f"nw_ttl=64,nw_frag=no,tp_src={sport},tp_dst={dport}"
+    )
+
+
+def test_udp_replies_are_not_new_connections():
+    # Due query DNS da porte casuali diverse e le relative risposte
+    lines = [
+        _dns("01.000", "from-lport", "10.0.0.50", 32868, "8.8.8.8", 53),
+        _dns("01.020", "to-lport", "8.8.8.8", 53, "10.0.0.50", 32868),
+        _dns("02.000", "from-lport", "10.0.0.50", 33481, "8.8.8.8", 53),
+        _dns("02.020", "to-lport", "8.8.8.8", 53, "10.0.0.50", 33481),
+    ]
+
+    summary = [(f.direction, f.dst_port) for f in collector.connections(lines)]
+
+    # Restano solo le due query: le risposte non sono connessioni in ingresso
+    assert summary == [("egress", 53), ("egress", 53)]
+
+
+def test_udp_datagram_without_request_is_a_connection():
+    # Un datagramma in ingresso non preceduto da una richiesta conta
+    line = _dns("03.000", "to-lport", "8.8.8.8", 53, "10.0.0.50", 40000)
+
+    assert [f.dst_port for f in collector.connections([line])] == [40000]
+
+
 def test_connections_from_a_mixed_stream():
     lines = [PING_IN, SSH_SYN, SSH_FIN_ACK, *HTTP_DROP,
              METADATA_SYN_OUT, METADATA_SYNACK_IN, "riga qualsiasi"]
