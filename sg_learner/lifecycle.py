@@ -4,6 +4,7 @@ Ogni VM seguita da SG-Learner attraversa questi stati:
 
     LEARNING  --(fine finestra o generate)-->  PROPOSED
     PROPOSED  --(approve)-->                   APPROVED
+    PROPOSED  --(reject)-->                    REJECTED
     APPROVED  --(Enforcer)-->                  ENFORCING
     qualunque --(learn)-->                     LEARNING   (riapprendimento)
 
@@ -12,7 +13,10 @@ Ogni VM seguita da SG-Learner attraversa questi stati:
 - alla fine della finestra il servizio genera la proposta con il Policy
   Engine (tick); l'amministratore puo' anche anticiparla (generate);
 - approve: l'amministratore approva la proposta; l'applicazione su Neutron
-  e' compito dell'Enforcer (enforcer.py), che porta la VM in ENFORCING.
+  e' compito dell'Enforcer (enforcer.py), che porta la VM in ENFORCING;
+- reject: l'amministratore rifiuta la proposta. Neutron non viene toccato:
+  la VM resta con i suoi gruppi originali e la proposta resta salvata come
+  storico. Per una nuova proposta si ripete l'osservazione con learn.
 """
 
 import dataclasses
@@ -25,6 +29,7 @@ LEARNING = "learning"
 PROPOSED = "proposed"
 APPROVED = "approved"
 ENFORCING = "enforcing"
+REJECTED = "rejected"
 
 DEFAULT_LEARN_DURATION = 3600  # secondi
 
@@ -144,6 +149,21 @@ class Lifecycle:
                 f"La proposta per {vm.name} non contiene regole: osservare"
                 " la VM piu' a lungo prima di approvare")
         vm.state = APPROVED
+        self.store.save_vm(vm)
+        return vm
+
+    def reject(self, name_or_id, now=None):
+        """Rifiuta la proposta: la VM resta con i gruppi originali."""
+        vm = self.get(name_or_id)
+        if vm.state != PROPOSED:
+            raise LifecycleError(
+                f"{vm.name} e' nello stato '{vm.state}': si rifiuta solo"
+                " una proposta in attesa")
+        # Nessuna chiamata a Neutron: in PROPOSED la porta ha gia' i gruppi
+        # originali (proposta mai applicata, oppure dopo un rollback).
+        # La proposta resta salvata, con l'ora del rifiuto, come storico.
+        vm.proposal["rejected_at"] = (now or _now()).isoformat()
+        vm.state = REJECTED
         self.store.save_vm(vm)
         return vm
 

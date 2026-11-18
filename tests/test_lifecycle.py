@@ -136,6 +136,33 @@ def test_approve_requires_a_proposal_with_rules(manager, store):
     assert manager.approve("vm-web").state == lifecycle.APPROVED
 
 
+def test_reject_keeps_original_groups_and_allows_new_learn(manager, store,
+                                                          cloud):
+    manager.learn("vm-web", now=T0)
+    with pytest.raises(lifecycle.LifecycleError):
+        manager.reject("vm-web")               # ancora in osservazione
+
+    store.record(flow(1, "172.24.4.1", 22))
+    manager.generate("vm-web")
+    calls = len(cloud.logging_calls)
+    vm = manager.reject("vm-web", now=T0 + datetime.timedelta(minutes=5))
+
+    assert vm.state == lifecycle.REJECTED
+    assert vm.security_groups == ["sg-default"]   # gruppi originali
+    assert len(cloud.logging_calls) == calls      # Neutron non toccato
+    saved = store.get_vm("vm-web")
+    assert saved.state == lifecycle.REJECTED
+    assert len(saved.proposal["rules"]) == 1      # resta come storico
+    assert saved.proposal["rejected_at"].startswith("2026-10-23T12:05")
+
+    with pytest.raises(lifecycle.LifecycleError):
+        manager.approve("vm-web")              # rifiutata: non si approva
+    with pytest.raises(lifecycle.LifecycleError):
+        manager.reject("vm-web")               # gia' rifiutata
+
+    assert manager.learn("vm-web", now=T0).state == lifecycle.LEARNING
+
+
 def test_learn_unknown_vm(manager):
     with pytest.raises(LookupError):
         manager.learn("non-esiste")
@@ -176,6 +203,22 @@ def test_cli_full_flow(run_cli, tmp_path):
 
     code, out = run_cli("proposal", "show", "vm-web")
     assert "Stato: approved" in out
+
+
+def test_cli_reject(run_cli, tmp_path):
+    run_cli("learn", "vm-web", "--duration", "30m")
+    with FlowStore(tmp_path / "sg-learner.db") as s:
+        s.record(flow(1, "172.24.4.1", 22))
+    run_cli("proposal", "generate", "vm-web")
+
+    code, out = run_cli("proposal", "reject", "vm-web")
+    assert code == 0 and "rifiutata" in out
+
+    code, out = run_cli("proposal", "show", "vm-web")
+    assert "Stato: rejected" in out
+
+    code, _ = run_cli("proposal", "approve", "vm-web")
+    assert code == 1
 
 
 def test_cli_reports_errors(run_cli, capsys):

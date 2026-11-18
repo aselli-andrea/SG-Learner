@@ -7,6 +7,7 @@ Uso (dopo `source devstack/openrc admin admin`):
     sg-learner proposal generate vm-web      genera subito la proposta
     sg-learner proposal show vm-web          mostra la proposta
     sg-learner proposal approve vm-web       approva la proposta
+    sg-learner proposal reject vm-web        rifiuta la proposta
     sg-learner rollback vm-web               ripristina i gruppi originali
     sg-learner alerts list [vm]              anomalie aperte
     sg-learner alerts accept 3               trasforma l'anomalia 3 in regola
@@ -81,7 +82,7 @@ def build_parser():
         description="SG-Learner: security group appresi dal traffico reale")
     parser.add_argument("--config-file", default=DEFAULT_CONFIG)
     # Un sottocomando per ogni operazione: learn, status, rollback,
-    # alerts (list/accept/dismiss) e proposal (generate/show/approve)
+    # alerts (list/accept/dismiss) e proposal (generate/show/approve/reject)
     sub = parser.add_subparsers(dest="command", required=True)
 
     learn = sub.add_parser("learn", help="avvia l'osservazione di una VM")
@@ -110,7 +111,8 @@ def build_parser():
     proposal_sub = proposal.add_subparsers(dest="action", required=True)
     for action, text in (("generate", "genera subito la proposta"),
                          ("show", "mostra la proposta"),
-                         ("approve", "approva la proposta")):
+                         ("approve", "approva la proposta"),
+                         ("reject", "rifiuta la proposta")):
         p = proposal_sub.add_parser(action, help=text)
         p.add_argument("vm", help="nome o ID della VM")
     return parser
@@ -204,6 +206,12 @@ def main(argv=None, conn=None, out=sys.stdout):
             vm = manager.approve(args.vm)
             print(f"Proposta per {vm.name} approvata: il servizio la"
                   " applichera' entro 30 secondi.", file=out)
+
+        elif args.action == "reject":
+            vm = manager.reject(args.vm)
+            print(f"Proposta per {vm.name} rifiutata: la VM resta con i"
+                  " security group originali. Per una nuova proposta:"
+                  f" sg-learner learn {vm.name}", file=out)
 
     # Errori previsti (VM non trovata, stato sbagliato, durata non valida,
     # modifica concorrente del servizio): messaggio breve e codice 1

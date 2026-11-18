@@ -51,14 +51,15 @@ Il percorso dei dati, dall'alto in basso:
 Tutte le chiamate a Nova e Neutron passano da un solo modulo (`cloud.py`), e
 tutto l'accesso al database da un altro (`store.py`).
 
-Ogni VM seguita da SG-Learner attraversa quattro stati:
+Ogni VM seguita da SG-Learner attraversa quattro stati, più uno per le proposte rifiutate:
 
 | Stato | Cosa succede | Come si passa allo stato successivo |
 |---|---|---|
 | `learning` | Il Packet Logging di Neutron registra **tutto** il traffico dei security group della VM; SG-Learner salva le connessioni | alla scadenza della finestra di osservazione, oppure con `proposal generate` |
-| `proposed` | Il Policy Engine ha calcolato il gruppo minimo; la proposta attende l'amministratore | `proposal approve` |
+| `proposed` | Il Policy Engine ha calcolato il gruppo minimo; la proposta attende l'amministratore | `proposal approve`, oppure `proposal reject` |
 | `approved` | La proposta è approvata | l'Enforcer la applica entro 30 secondi |
 | `enforcing` | La VM usa il gruppo `learned-<vm>`; il logging registra solo il traffico **bloccato**, analizzato dall'Anomaly Detector | `rollback` riporta in `proposed`; un'anomalia accettata riporta in `approved` |
+| `rejected` | La proposta è stata rifiutata: la VM resta con i gruppi originali e la proposta resta salvata come storico | `learn` avvia una nuova osservazione |
 
 I componenti:
 
@@ -236,6 +237,7 @@ alias sg-learner=/opt/stack/data/venv/bin/sg-learner
 | `sg-learner proposal generate <vm>` | chiude subito l'osservazione e calcola la proposta |
 | `sg-learner proposal show <vm>` | mostra la proposta |
 | `sg-learner proposal approve <vm>` | approva: l'Enforcer la applica entro 30 secondi |
+| `sg-learner proposal reject <vm>` | rifiuta: la VM resta con i gruppi originali, la proposta resta come storico |
 | `sg-learner alerts list [<vm>] [--all]` | anomalie aperte (con `--all` anche quelle chiuse) |
 | `sg-learner alerts accept <id>` | trasforma un'anomalia in regola (non vale per le scansioni) |
 | `sg-learner alerts dismiss <id>` | chiude un'anomalia, che resta nello storico |
@@ -537,7 +539,7 @@ Dopo l'applicazione:
 | `sg_learner/__init__.py` | versione del pacchetto |
 | `tools/demo.sh` | demo con tre VM: `setup`, `services`, `run`, `test`, `clean` |
 | `tools/post-boot.sh` | dopo un riavvio della macchina DevStack: attende l'orologio, ricollega `br-ex`, riavvia i servizi in ordine, fa riaprire il log a OVN |
-| `tests/test_*.py` | 85 test automatici (tabella sotto) |
+| `tests/test_*.py` | 87 test automatici (tabella sotto) |
 | `tests/fixtures/ovn_acl_log_sample.txt` | righe reali del log di OVN usate dai test |
 | `setup.py`, `setup.cfg` | pacchetto Python: metadati, dipendenze e i due comandi `sg-learner` e `sg-learner-service` |
 | `requirements.txt`, `test-requirements.txt` | dipendenze: openstacksdk per il programma, pytest per i test |
@@ -555,6 +557,6 @@ Neutron simulato.
 | `test_store.py` | 9 | conteggi, filtri, persistenza, salvataggi concorrenti |
 | `test_follower.py` | 11 | righe nuove e incomplete, rotazione, troncamento, ripresa dopo un riavvio |
 | `test_engine.py` | 14 | soglia pubblica, `remote_group`, regole di base, IPv6, parametri per Neutron |
-| `test_lifecycle.py` | 11 | transizioni di stato, comandi della CLI, credenziali mancanti, ripresa all'avvio |
+| `test_lifecycle.py` | 13 | transizioni di stato, rifiuto della proposta, comandi della CLI, credenziali mancanti, ripresa all'avvio |
 | `test_enforcer.py` | 14 | regole approvate, idempotenza, riconciliazione, `remote_group`, rollback |
 | `test_detector.py` | 12 | alert, candidate e scan, accept e dismiss, comandi `alerts` |
