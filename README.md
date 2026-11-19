@@ -115,6 +115,9 @@ servizio `devstack@sg-learner`, che gira di continuo, fa il resto.
    - La VM passa in `proposed`.
 4. **`sg-learner proposal approve vm-web`**
    - La CLI segna la proposta come `approved` e basta: non tocca Neutron.
+   - In alternativa, `sg-learner proposal reject vm-web` rifiuta la proposta:
+     la VM resta con i gruppi originali e passa in `rejected`; per una nuova
+     proposta si ripete `learn`.
 5. **Entro 30 secondi, l'Enforcer**
    - Crea il gruppo `learned-vm-web` e cancella le regole "tutto permesso in
      uscita" che Neutron vi aggiunge.
@@ -531,7 +534,7 @@ Dopo l'applicazione:
 | `sg_learner/collector.py` | interpreta le righe `acl_log` e tiene solo l'inizio delle connessioni, scartando ritrasmissioni e risposte UDP |
 | `sg_learner/store.py` | database SQLite: connessioni osservate, VM seguite con il loro stato, anomalie, posizione nel log; un salvataggio non sovrascrive le modifiche fatte nel frattempo da un altro processo |
 | `sg_learner/engine.py` | Policy Engine: dalle osservazioni alla proposta (`remote_group` tra VM, `0.0.0.0/0` o `/32` per gli esterni, regole di base, DHCP e metadata esclusi) |
-| `sg_learner/lifecycle.py` | stati delle VM: avvio dell'osservazione, proposta alla scadenza o su richiesta, approvazione |
+| `sg_learner/lifecycle.py` | stati delle VM: avvio dell'osservazione, proposta alla scadenza o su richiesta, approvazione o rifiuto |
 | `sg_learner/enforcer.py` | crea e mantiene i gruppi `learned-<vm>` su Neutron, li assegna alle porte, annulla le modifiche manuali, esegue il rollback |
 | `sg_learner/detector.py` | Anomaly Detector: classifica il traffico bloccato in `alert`, `candidate` e `scan`; gestisce `accept` e `dismiss` |
 | `sg_learner/cloud.py` | unico punto di accesso a Nova e Neutron (openstacksdk), comprese le chiamate REST al Packet Logging |
