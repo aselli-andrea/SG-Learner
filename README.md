@@ -41,7 +41,8 @@ Il percorso dei dati, dall'alto in basso:
 2. **Raccolta**: il LogFollower legge le righe nuove, il Flow Collector le
    trasforma in connessioni e il Flow Store le salva in SQLite.
 3. **Decisione**: alla fine dell'osservazione il Policy Engine calcola la
-   proposta; l'amministratore la approva con la CLI `sg-learner`.
+   proposta; l'amministratore la approva con la CLI `sg-learner` o con
+   l'API REST.
 4. **Applicazione**: l'Enforcer crea il gruppo `learned-<vm>` su Neutron, lo
    assegna alla porta della VM e attiva il logging dei soli pacchetti
    bloccati.
@@ -212,11 +213,14 @@ quello che serve:
 
 Per verificare: `sudo journalctl -u devstack@sg-learner -n 20 --no-pager`
 deve mostrare l'autenticazione su Keystone, `Logging API attiva` e
-`Log OVN leggibile`.
+`Log OVN leggibile`; `sudo journalctl -u devstack@sg-learner-api -n 5
+--no-pager` deve mostrare `API di SG-Learner ... in ascolto su 0.0.0.0:9797`.
 
 L'installazione è stata verificata da zero il 06/11/2026: `./unstack.sh`,
 poi `./stack.sh` con il plugin scaricato da GitHub e la sola riga
-`enable_plugin` nel `local.conf`, senza altri passaggi a mano.
+`enable_plugin` nel `local.conf`, senza altri passaggi a mano. Il 20/11/2026
+una seconda installazione da zero ha verificato anche l'API REST: il plugin
+la configura, la registra nel catalogo di Keystone e la avvia da solo.
 
 Dopo un riavvio della macchina DevStack conviene lanciare, come utente
 `stack`, [`tools/post-boot.sh`](tools/post-boot.sh): aspetta la
@@ -560,7 +564,7 @@ Dopo l'applicazione:
   loro regole `remote_group`, quel gruppo resta sulla porta anche dopo il
   rollback. Le regole si sommano, quindi non restringe nulla, e le altre
   VM continuano ad accettarne il traffico.
-- **Modifiche concorrenti.** Servizio e CLI sono due processi: una VM letta
+- **Modifiche concorrenti.** Servizio, CLI e API sono processi separati: una VM letta
   dal database viene salvata solo se nessuno l'ha cambiata nel frattempo,
   così un `accept` non viene sovrascritto dalla riconciliazione.
 - **API protetta da Keystone.** Davanti all'API c'è `keystonemiddleware`,
