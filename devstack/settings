@@ -3,8 +3,9 @@
 # Caricato da DevStack prima di plugin.sh. Ogni variabile puo' essere
 # sovrascritta nel local.conf.
 
-# Abilita il servizio quando il plugin e' attivato con enable_plugin
-enable_service sg-learner
+# Abilita il servizio e l'API REST quando il plugin e' attivato con
+# enable_plugin (l'API si puo' escludere con disable_service sg-learner-api)
+enable_service sg-learner sg-learner-api
 
 # Percorsi
 SG_LEARNER_DIR=${SG_LEARNER_DIR:-$DEST/sg-learner}
@@ -14,6 +15,11 @@ SG_LEARNER_DATA_DIR=${SG_LEARNER_DATA_DIR:-$DATA_DIR/sg-learner}
 
 # Utente di servizio in Keystone (progetto "service")
 SG_LEARNER_SERVICE_USER=${SG_LEARNER_SERVICE_USER:-sg-learner}
+
+# API REST: indirizzo e porta di ascolto, URL registrato nel catalogo
+SG_LEARNER_API_HOST=${SG_LEARNER_API_HOST:-0.0.0.0}
+SG_LEARNER_API_PORT=${SG_LEARNER_API_PORT:-9797}
+SG_LEARNER_API_URL=${SG_LEARNER_API_URL:-http://$SERVICE_HOST:$SG_LEARNER_API_PORT/v1}
 
 # Ciclo di controllo del servizio, in secondi
 SG_LEARNER_INTERVAL=${SG_LEARNER_INTERVAL:-30}

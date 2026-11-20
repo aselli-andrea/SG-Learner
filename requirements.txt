@@ -1,1 +1,3 @@
 openstacksdk
+flask
+keystonemiddleware

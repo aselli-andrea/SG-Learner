@@ -8,10 +8,12 @@
 # Fasi gestite:
 #   stack install     -> installa il pacchetto Python
 #   stack post-config -> configura Neutron (Packet Logging), crea l'utente
-#                        di servizio in Keystone, scrive la configurazione,
-#                        concede la lettura del log di OVN
-#   stack extra       -> avvia il servizio (systemd: devstack@sg-learner)
-#   unstack / clean   -> ferma il servizio e ripulisce
+#                        di servizio e registra l'API nel catalogo di
+#                        Keystone, scrive la configurazione, concede la
+#                        lettura del log di OVN
+#   stack extra       -> avvia il servizio e l'API REST (systemd:
+#                        devstack@sg-learner, devstack@sg-learner-api)
+#   unstack / clean   -> ferma servizio e API e ripulisce
 
 # Salva lo stato di xtrace e lo disattiva per non stampare le password
 _XTRACE_SG_LEARNER=$(set +o | grep xtrace)
@@ -37,6 +39,12 @@ function configure_sg_learner_neutron_log {
 # vedere le VM di tutti i progetti e gestire i security group altrui.
 function create_sg_learner_accounts {
     create_service_user "$SG_LEARNER_SERVICE_USER" "admin"
+    # L'API REST nel catalogo di Keystone: compare in "openstack catalog list"
+    if is_service_enabled sg-learner-api; then
+        get_or_create_service "sg-learner" "sg-learner" \
+            "SG-Learner: security group appresi dal traffico"
+        get_or_create_endpoint "sg-learner" "$REGION_NAME" "$SG_LEARNER_API_URL"
+    fi
 }
 
 # Il log di ovn-controller appartiene a root (rw-r-----). Una ACL
@@ -70,6 +78,12 @@ function configure_sg_learner_conf {
     iniset $SG_LEARNER_CONF openstack project_domain_name $SERVICE_DOMAIN_NAME
     iniset $SG_LEARNER_CONF openstack region_name $REGION_NAME
 
+    # API REST: ascolto e autenticazione dei token con keystonemiddleware
+    # (sezione [keystone_authtoken], la stessa usata dai servizi OpenStack)
+    iniset $SG_LEARNER_CONF api host $SG_LEARNER_API_HOST
+    iniset $SG_LEARNER_CONF api port $SG_LEARNER_API_PORT
+    configure_keystone_authtoken_middleware $SG_LEARNER_CONF $SG_LEARNER_SERVICE_USER
+
     # Il file contiene la password dell'utente di servizio
     chmod 640 $SG_LEARNER_CONF
 }
@@ -84,10 +98,13 @@ function configure_sg_learner {
 # run_process crea l'unita' systemd devstack@sg-learner
 function start_sg_learner {
     run_process sg-learner "$(get_python_exec_prefix)/sg-learner-service --config-file $SG_LEARNER_CONF"
+    # run_process agisce solo se il servizio indicato e' abilitato
+    run_process sg-learner-api "$(get_python_exec_prefix)/sg-learner-api --config-file $SG_LEARNER_CONF"
 }
 
 function stop_sg_learner {
     stop_process sg-learner
+    stop_process sg-learner-api
 }
 
 function cleanup_sg_learner {

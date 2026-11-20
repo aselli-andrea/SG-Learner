@@ -81,8 +81,10 @@ I componenti:
   manuali.
 - **Anomaly Detector** classifica il traffico bloccato delle VM applicate in
   `alert`, `candidate` o `scan` (vedi [Scelte di sicurezza](#7-scelte-di-sicurezza)).
-- **CLI `sg-learner`** è l'interfaccia dell'amministratore; il servizio
-  `devstack@sg-learner` fa tutto il resto.
+- **CLI `sg-learner` e API REST** sono le due interfacce dell'amministratore,
+  con le stesse operazioni. L'API (Flask, servizio
+  `devstack@sg-learner-api`) accetta solo token Keystone con ruolo `admin`.
+  Il servizio `devstack@sg-learner` fa tutto il resto.
 
 ### Cosa succede passo passo
 
@@ -204,9 +206,9 @@ quello che serve:
 | Fase di DevStack | Cosa fa il plugin |
 |---|---|
 | `stack install` | installa il pacchetto Python `sg-learner` |
-| `stack post-config` | attiva il Packet Logging di Neutron (service plugin `log`, `rate_limit` e `burst_limit`); crea l'utente di servizio `sg-learner` in Keystone; concede all'utente `stack` la lettura del log di OVN con una ACL; scrive `/etc/sg-learner/sg-learner.conf` |
-| `stack extra` | avvia il servizio `devstack@sg-learner` (systemd) |
-| `unstack` / `clean` | ferma il servizio / cancella configurazione e dati |
+| `stack post-config` | attiva il Packet Logging di Neutron (service plugin `log`, `rate_limit` e `burst_limit`); crea l'utente di servizio `sg-learner` in Keystone e registra l'API nel catalogo; concede all'utente `stack` la lettura del log di OVN con una ACL; scrive `/etc/sg-learner/sg-learner.conf`, compresa la sezione `[keystone_authtoken]` per l'API |
+| `stack extra` | avvia il servizio `devstack@sg-learner` e l'API `devstack@sg-learner-api` (systemd) |
+| `unstack` / `clean` | ferma servizio e API / cancella configurazione e dati |
 
 Per verificare: `sudo journalctl -u devstack@sg-learner -n 20 --no-pager`
 deve mostrare l'autenticazione su Keystone, `Logging API attiva` e
@@ -268,6 +270,40 @@ $ sg-learner alerts list
   10 vm-db          candidate          6 28/10 19:02  ingress tcp/22 da 172.24.4.1
 ```
 
+### API REST
+
+Le stesse operazioni sono disponibili via HTTP sulla porta 9797, con risposte
+in JSON. L'API è registrata nel catalogo di Keystone (`openstack catalog
+list`, servizio `sg-learner`). Ogni richiesta deve portare un token Keystone
+nell'header `X-Auth-Token`: senza token la risposta è 401, con un token
+senza ruolo `admin` è 403.
+
+```bash
+source /opt/stack/devstack/openrc admin admin
+TOKEN=$(openstack token issue -f value -c id)
+API=http://192.168.203.128:9797/v1
+
+curl -s -H "X-Auth-Token: $TOKEN" $API/vms
+curl -s -H "X-Auth-Token: $TOKEN" -X POST $API/vms/vm-web/proposal/approve
+```
+
+| Metodo e percorso | Effetto |
+|---|---|
+| `GET /v1/vms` | stato di tutte le VM seguite |
+| `GET /v1/vms/<vm>` | una VM, con la proposta |
+| `POST /v1/vms/<vm>/learn` | avvia l'osservazione (corpo facoltativo `{"duration": "30m"}`) |
+| `POST /v1/vms/<vm>/proposal/generate` | chiude subito l'osservazione e calcola la proposta |
+| `POST /v1/vms/<vm>/proposal/approve` | approva: l'Enforcer la applica entro 30 secondi |
+| `POST /v1/vms/<vm>/proposal/reject` | rifiuta la proposta |
+| `POST /v1/vms/<vm>/rollback` | rimette i security group originali |
+| `GET /v1/alerts[?vm=<vm>&all=true]` | anomalie aperte (con `all=true` anche quelle chiuse) |
+| `POST /v1/alerts/<id>/accept` | trasforma un'anomalia in regola |
+| `POST /v1/alerts/<id>/dismiss` | chiude un'anomalia |
+
+Gli errori hanno un codice HTTP e un messaggio: 404 se la VM o l'anomalia
+non esiste, 409 se l'operazione non è valida nello stato attuale (ad esempio
+approvare durante l'osservazione), 400 se la durata non è valida.
+
 ---
 
 ## 5. Configurazione
@@ -286,6 +322,18 @@ data_dir = /opt/stack/data/sg-learner
 # credenziali dell'utente di servizio sg-learner in Keystone
 auth_url = ...
 username = sg-learner
+...
+
+[api]
+# indirizzo e porta dell'API REST
+host = 0.0.0.0
+port = 9797
+
+[keystone_authtoken]
+# opzioni di keystonemiddleware, scritte da DevStack
+# (configure_keystone_authtoken_middleware): verifica dei token dell'API
+www_authenticate_uri = ...
+auth_type = password
 ...
 ```
 
@@ -515,6 +563,11 @@ Dopo l'applicazione:
 - **Modifiche concorrenti.** Servizio e CLI sono due processi: una VM letta
   dal database viene salvata solo se nessuno l'ha cambiata nel frattempo,
   così un `accept` non viene sovrascritto dalla riconciliazione.
+- **API protetta da Keystone.** Davanti all'API c'è `keystonemiddleware`,
+  lo stesso componente dei servizi OpenStack: verifica il token con
+  Keystone e toglie dalle richieste gli header di identità inviati dal
+  client, così nessuno può fingersi amministratore. L'API accetta solo il
+  ruolo `admin`, come la CLI.
 - **Privilegi.** L'utente di servizio ha il ruolo `admin` (serve per vedere
   le VM di tutti i progetti); la configurazione con la password è leggibile
   solo da `stack` (permessi 640); il log di OVN è accessibile in sola
@@ -539,13 +592,14 @@ Dopo l'applicazione:
 | `sg_learner/detector.py` | Anomaly Detector: classifica il traffico bloccato in `alert`, `candidate` e `scan`; gestisce `accept` e `dismiss` |
 | `sg_learner/cloud.py` | unico punto di accesso a Nova e Neutron (openstacksdk), comprese le chiamate REST al Packet Logging |
 | `sg_learner/cli.py` | il comando `sg-learner` dell'amministratore |
+| `sg_learner/api.py` | l'API REST (Flask) con le stesse operazioni della CLI, protetta da `keystonemiddleware`; servizio `devstack@sg-learner-api` |
 | `sg_learner/__init__.py` | versione del pacchetto |
 | `tools/demo.sh` | demo con tre VM: `setup`, `services`, `run`, `test`, `clean` |
 | `tools/post-boot.sh` | dopo un riavvio della macchina DevStack: attende l'orologio, ricollega `br-ex`, riavvia i servizi in ordine, fa riaprire il log a OVN |
-| `tests/test_*.py` | 87 test automatici (tabella sotto) |
+| `tests/test_*.py` | 93 test automatici (tabella sotto) |
 | `tests/fixtures/ovn_acl_log_sample.txt` | righe reali del log di OVN usate dai test |
-| `setup.py`, `setup.cfg` | pacchetto Python: metadati, dipendenze e i due comandi `sg-learner` e `sg-learner-service` |
-| `requirements.txt`, `test-requirements.txt` | dipendenze: openstacksdk per il programma, pytest per i test |
+| `setup.py`, `setup.cfg` | pacchetto Python: metadati, dipendenze e i tre comandi `sg-learner`, `sg-learner-service` e `sg-learner-api` |
+| `requirements.txt`, `test-requirements.txt` | dipendenze: openstacksdk, Flask e keystonemiddleware per il programma, pytest per i test |
 
 I test non richiedono OpenStack: usano righe reali del log di OVN e un
 Neutron simulato.
@@ -563,3 +617,4 @@ Neutron simulato.
 | `test_lifecycle.py` | 13 | transizioni di stato, rifiuto della proposta, comandi della CLI, credenziali mancanti, ripresa all'avvio |
 | `test_enforcer.py` | 14 | regole approvate, idempotenza, riconciliazione, `remote_group`, rollback |
 | `test_detector.py` | 12 | alert, candidate e scan, accept e dismiss, comandi `alerts` |
+| `test_api.py` | 6 | 401 senza token e 403 senza ruolo admin, ciclo completo via HTTP, codici di errore, anomalie, applicazione da parte dell'Enforcer |
