@@ -1,23 +1,14 @@
-"""Comandi per l'amministratore: sg-learner <comando>.
+"""CLI dell'amministratore: sg-learner <comando>.
 
-Uso (dopo `source devstack/openrc admin admin`):
+    sg-learner learn <vm> --duration 30m   avvia l'osservazione
+    sg-learner status                       stato delle VM seguite
+    sg-learner proposal generate|show|approve|reject <vm>
+    sg-learner rollback <vm>                rimette i gruppi originali
+    sg-learner alerts list [vm] | accept <id> | dismiss <id>
 
-    sg-learner learn vm-web --duration 30m   avvia l'osservazione
-    sg-learner status                        stato di tutte le VM seguite
-    sg-learner proposal generate vm-web      genera subito la proposta
-    sg-learner proposal show vm-web          mostra la proposta
-    sg-learner proposal approve vm-web       approva la proposta
-    sg-learner proposal reject vm-web        rifiuta la proposta
-    sg-learner rollback vm-web               ripristina i gruppi originali
-    sg-learner alerts list [vm]              anomalie aperte
-    sg-learner alerts accept 3               trasforma l'anomalia 3 in regola
-    sg-learner alerts dismiss 3              ignora l'anomalia 3
-
-La CLI usa le credenziali dell'utente che la esegue (variabili OS_* di
-openrc): solo chi ha accesso amministrativo a OpenStack puo' usarla.
-Scrive le decisioni nello stesso database del servizio, che le esegue
-al giro successivo. Le stesse operazioni sono disponibili via HTTP con
-l'API REST (api.py).
+Usa le credenziali OS_* di openrc per OpenStack e scrive le decisioni nel
+database del servizio, che le esegue al giro successivo. Le stesse
+operazioni sono disponibili via HTTP con l'API REST (api.py).
 """
 
 import argparse

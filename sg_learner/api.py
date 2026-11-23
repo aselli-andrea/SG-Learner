@@ -1,15 +1,9 @@
 """API REST di SG-Learner (Flask), protetta da Keystone.
 
-Offre le stesse operazioni della CLI, chiamando le stesse classi
-(Lifecycle, Enforcer, AnomalyDetector) sullo stesso database: le decisioni
-prese con l'API le esegue il servizio al giro successivo, come per la CLI.
-
-Autenticazione: davanti all'applicazione c'e' keystonemiddleware, il
-componente standard dei servizi OpenStack. Verifica il token Keystone
-dell'header X-Auth-Token (401 se manca o non e' valido) e passa
-all'applicazione l'identita' negli header X-Identity-Status e X-Roles,
-togliendo quelli eventualmente inviati dal client. L'applicazione accetta
-solo utenti con ruolo admin (403 altrimenti), come la CLI.
+Stesse operazioni della CLI, con le stesse classi e lo stesso database.
+keystonemiddleware verifica il token (401 se manca o non e' valido) e passa
+l'identita' negli header X-Identity-Status e X-Roles, togliendo quelli
+inviati dal client. L'applicazione accetta solo il ruolo admin (403).
 
 Endpoint (JSON, prefisso /v1):
 
@@ -90,9 +84,8 @@ def create_app(data_dir, cloud_factory, engine_options=None,
                default_duration=lifecycle.DEFAULT_LEARN_DURATION):
     """Crea l'applicazione Flask.
 
-    `cloud_factory` restituisce il cloud.Cloud da usare: viene chiamata alla
-    prima richiesta che ne ha bisogno, cosi' l'API parte anche se Keystone
-    non e' ancora pronto (ad esempio subito dopo un riavvio).
+    `cloud_factory` crea il collegamento a OpenStack alla prima richiesta
+    che ne ha bisogno: l'API parte anche se Keystone non e' ancora pronto.
     """
     app = flask.Flask("sg_learner.api")
     app.json.sort_keys = False

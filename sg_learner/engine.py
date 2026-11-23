@@ -1,30 +1,15 @@
 """Policy Engine: dalle osservazioni alla proposta di security group minimo.
 
-Riceve le osservazioni di una VM (dal Flow Store) e propone le sole regole
-necessarie a consentire il traffico realmente visto. Non chiama OpenStack:
-le informazioni sul cloud (quale IP appartiene a quale altra VM) gli vengono
-passate da chi lo usa, cosi' la logica si puo' verificare con i test.
+Non chiama OpenStack: quale IP appartiene a quale VM gli viene passato
+(ip_to_group), cosi' la logica si prova con i test. Regole:
 
-Regole di costruzione della proposta:
-
-1. Solo il traffico consentito (verdict=allow) diventa una regola. I
-   tentativi bloccati vengono riportati a parte, come informazione.
-2. Il traffico di infrastruttura non diventa una regola appresa:
-   - DHCP e metadata sono coperti dalle regole di base (BASE_RULES), che
-     l'Enforcer aggiunge sempre al gruppo learned. Con ML2/OVN Neutron
-     NON consente il DHCP da solo: senza la regola di base, al riavvio
-     la VM non ottiene l'indirizzo;
-   - la Neighbor Discovery IPv6 (ICMPv6 133-137) e' gestita da Neutron.
-3. Le connessioni vengono raggruppate per direzione, protocollo e porta
-   di servizio (o tipo ICMP).
-4. Per ogni gruppo, gli altri capi della comunicazione diventano:
-   - remote_group, se sono altre VM del cloud: la regola segue il loro
-     security group, anche se cambiano indirizzo;
-   - 0.0.0.0/0 (o ::/0), se gli IP esterni distinti sono almeno
-     `public_threshold`: e' un servizio pubblico;
-   - un /32 (o /128) per ciascun IP esterno, altrimenti.
-5. Le regole con poche connessioni (meno di `low_confidence_below`) sono
-   marcate come "poco osservate", da controllare con attenzione.
+1. solo il traffico permesso diventa regola; il bloccato e' riportato a parte;
+2. DHCP, metadata e Neighbor Discovery IPv6 sono esclusi (i primi due sono
+   coperti da BASE_RULES);
+3. le connessioni si raggruppano per direzione, protocollo e porta;
+4. altro capo: remote_group per le VM del cloud, 0.0.0.0/0 con almeno
+   `public_threshold` IP esterni, altrimenti un /32 per IP;
+5. sotto `low_confidence_below` connessioni la regola e' "poco osservata".
 """
 
 import collections
@@ -141,10 +126,8 @@ def _base_rule(direction, protocol, port, prefix):
         connections=0, remotes=(), low_confidence=False, base=True)
 
 
-# Regole che servono a ogni VM per avviarsi, anche se durante l'osservazione
-# (fatta a VM gia' accesa) non sono state viste: la richiesta DHCP
-# (da 0.0.0.0 in broadcast, poi i rinnovi verso il server DHCP) e il
-# servizio metadata. Le risposte DHCP di OVN sono gia' consentite da OVN.
+# DHCP e metadata servono a ogni VM per avviarsi, anche se non visti durante
+# l'osservazione: con ML2/OVN, senza la regola DHCP la VM perde l'IP al riavvio
 BASE_RULES = (
     _base_rule("egress", "udp", 67, "0.0.0.0/0"),
     _base_rule("egress", "tcp", 80, f"{METADATA_IP}/32"),

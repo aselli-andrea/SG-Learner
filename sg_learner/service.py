@@ -1,17 +1,9 @@
-"""Punto di avvio del servizio SG-Learner (eseguito da systemd).
+"""Servizio SG-Learner (devstack@sg-learner), avviato da systemd.
 
-All'avvio legge la configurazione e verifica l'accesso a OpenStack e al log
-di OVN. Poi, in un ciclo continuo:
-
-1. legge le righe nuove del log di ovn-controller (LogFollower);
-2. ne estrae le connessioni nuove (Flow Collector);
-3. le salva nel database (Flow Store).
-
-A ogni intervallo scrive un riepilogo dell'attivita' e fa avanzare il ciclo
-di vita delle VM: per quelle con la finestra di osservazione scaduta genera
-la proposta con il Policy Engine; quelle approvate vengono applicate
-dall'Enforcer, e quelle gia' applicate vengono riconciliate. Infine
-l'Anomaly Detector esamina il traffico bloccato delle VM applicate.
+All'avvio legge la configurazione e controlla OpenStack e il log di OVN.
+Poi gira in un ciclo: ogni 2 secondi legge il log e salva le connessioni;
+ogni 30 secondi genera le proposte scadute, applica e riconcilia
+(Enforcer) e analizza il traffico bloccato (Anomaly Detector).
 """
 
 import argparse
@@ -101,11 +93,8 @@ def connect_with_retry(conf, ovn_log, should_stop, attempts=30, delay=10,
                        sleep=time.sleep):
     """Connessione e controlli di avvio, ripetuti se OpenStack non e' pronto.
 
-    Dopo un riavvio della macchina i servizi DevStack ripartono tutti
-    insieme, e SG-Learner puo' avviarsi prima di Keystone: invece di
-    fermarsi riprova ogni `delay` secondi, per `attempts` volte
-    (5 minuti con i valori predefiniti).
-    Restituisce la connessione, oppure None se il servizio viene fermato.
+    Dopo un riavvio SG-Learner puo' partire prima di Keystone: riprova ogni
+    `delay` secondi per `attempts` volte (5 minuti). None se viene fermato.
     """
     for attempt in range(1, attempts + 1):
         try:
@@ -159,13 +148,8 @@ class CollectionWorker:
 
 
 def main(argv=None):
-    """Programma del servizio devstack@sg-learner.
-
-    Legge la configurazione, si collega a OpenStack (riprovando se non e'
-    pronto), poi gira finche' non riceve SIGTERM: ogni `poll_interval`
-    secondi legge il log e salva le connessioni; ogni `interval` secondi
-    genera le proposte scadute, applica e riconcilia (Enforcer) e analizza
-    il traffico bloccato (Anomaly Detector).
+    """Programma del servizio: configurazione, connessione a OpenStack,
+    poi il ciclo principale finche' non arriva SIGTERM.
     """
     args = parse_args(sys.argv[1:] if argv is None else argv)
     logging.basicConfig(

@@ -1,13 +1,9 @@
 """Accesso a OpenStack: tutte le chiamate a Nova e Neutron passano da qui.
 
-Raccogliere le chiamate in un unico modulo ha due vantaggi: il resto del
-codice non dipende dai dettagli delle API, e nei test questa classe puo'
-essere sostituita da una finta (FakeCloud in tests/test_lifecycle.py,
-FakeNeutron in tests/test_enforcer.py).
-
-Il Packet Logging di Neutron non e' ancora coperto da openstacksdk, quindi
-le chiamate a /log/logs usano direttamente l'API REST tramite la sessione
-autenticata di openstacksdk.
+Un solo confine verso OpenStack: il resto del codice non dipende dalle API,
+e nei test questa classe si sostituisce con una finta (FakeCloud,
+FakeNeutron). Il Packet Logging non e' coperto da openstacksdk: per
+/log/logs si usa l'API REST con la sessione autenticata della libreria.
 """
 
 import dataclasses
@@ -107,12 +103,10 @@ class Cloud:
                                       security_group_ids=list(sg_ids))
 
     def ensure_security_group(self, name, project_id, description=""):
-        """Restituisce l'ID del gruppo `name` nel progetto, creandolo se
-        non esiste.
+        """ID del gruppo `name` nel progetto, creato se non esiste.
 
-        Un gruppo appena creato viene svuotato: Neutron vi aggiunge regole
-        "tutto permesso in uscita" (IPv4 e IPv6) che allargherebbero i
-        permessi di qualunque porta a cui il gruppo viene assegnato.
+        Un gruppo nuovo viene svuotato delle regole "tutto in uscita" che
+        Neutron aggiunge: allargherebbero i permessi della porta.
         """
         for sg in self.conn.network.security_groups(name=name,
                                                     project_id=project_id):

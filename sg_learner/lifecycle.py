@@ -1,24 +1,14 @@
-"""Ciclo di vita delle VM: osservazione, proposta, approvazione.
-
-Ogni VM seguita da SG-Learner attraversa questi stati:
+"""Ciclo di vita delle VM: osservazione, proposta, approvazione, rifiuto.
 
     LEARNING  --(fine finestra o generate)-->  PROPOSED
-    PROPOSED  --(approve)-->                   APPROVED
-    PROPOSED  --(reject)-->                    REJECTED
-    APPROVED  --(Enforcer)-->                  ENFORCING
-    ENFORCING --(rollback, enforcer.py)-->     PROPOSED
-    ENFORCING --(accept, detector.py)-->       APPROVED
-    qualunque --(learn)-->                     LEARNING   (riapprendimento)
+    PROPOSED  --(approve)-->  APPROVED  --(Enforcer)-->  ENFORCING
+    PROPOSED  --(reject)-->   REJECTED
+    ENFORCING --(rollback)--> PROPOSED
+    ENFORCING --(accept di un'anomalia)-->  APPROVED
+    qualunque --(learn)-->    LEARNING
 
-- learn: attiva il Packet Logging sui security group della VM, azzera le
-  osservazioni precedenti e apre una finestra di osservazione;
-- alla fine della finestra il servizio genera la proposta con il Policy
-  Engine (tick); l'amministratore puo' anche anticiparla (generate);
-- approve: l'amministratore approva la proposta; l'applicazione su Neutron
-  e' compito dell'Enforcer (enforcer.py), che porta la VM in ENFORCING;
-- reject: l'amministratore rifiuta la proposta. Neutron non viene toccato:
-  la VM resta con i suoi gruppi originali e la proposta resta salvata come
-  storico. Per una nuova proposta si ripete l'osservazione con learn.
+approve e reject scrivono solo la decisione nel database: su Neutron
+agisce l'Enforcer (enforcer.py), al giro successivo del servizio.
 """
 
 import dataclasses
@@ -86,11 +76,9 @@ class Lifecycle:
         log_ids = self.cloud.enable_logging(
             port.security_group_ids, port.project_id,
             name=f"sg-learner-{port.server_name}")
-        # Si riparte da zero: le osservazioni vecchie non entrano nella
-        # nuova proposta
+        # Le osservazioni vecchie non entrano nella nuova proposta
         self.store.forget(port.mac)
-        # Se la VM era gia' seguita, i gruppi "originali" (per il rollback)
-        # e il gruppo learned restano quelli di prima
+        # VM gia' seguita: restano i gruppi originali (rollback) e il learned
         previous = self.store.get_vm(port.server_id)
         originals = (previous.security_groups if previous
                      else list(port.security_group_ids))
@@ -119,12 +107,10 @@ class Lifecycle:
     def _propose(self, vm, now):
         """Genera la proposta con il Policy Engine e porta la VM in PROPOSED.
 
-        Usata da generate (su richiesta) e da tick (a fine finestra). Salva
-        in vm.proposal le regole, il testo per l'amministratore e vm_groups:
-        per ogni gruppo logico "vm:<nome>", la VM che ne fara' parte.
+        Usata da generate e da tick. vm_groups dice, per ogni gruppo logico
+        "vm:<nome>", quale VM ne fara' parte (serve all'Enforcer).
         """
-        # IP delle altre VM -> loro gruppo: serve al Policy Engine per
-        # scrivere regole remote_group invece di singoli indirizzi
+        # IP delle altre VM -> gruppo: per regole remote_group, non per IP
         ip_to_group, group_to_server = self.cloud.vm_groups_by_ip(
             exclude_server_id=vm.server_id)
         proposal = engine.build_proposal(
@@ -168,9 +154,8 @@ class Lifecycle:
             raise LifecycleError(
                 f"{vm.name} e' nello stato '{vm.state}': si rifiuta solo"
                 " una proposta in attesa")
-        # Nessuna chiamata a Neutron: in PROPOSED la porta ha gia' i gruppi
-        # originali (proposta mai applicata, oppure dopo un rollback).
-        # La proposta resta salvata, con l'ora del rifiuto, come storico.
+        # Niente Neutron: in PROPOSED la porta ha gia' i gruppi originali.
+        # La proposta resta salvata come storico
         vm.proposal["rejected_at"] = (now or _now()).isoformat()
         vm.state = REJECTED
         self.store.save_vm(vm)

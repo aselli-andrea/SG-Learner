@@ -1,28 +1,16 @@
 """Enforcer: applica su Neutron le proposte approvate e le mantiene.
 
-Per una VM in stato APPROVED:
+apply, per una VM approvata:
 
-1. prepara i gruppi delle altre VM citate dalle regole remote_group
-   (`learned-<nome>`): se non esistono li crea vuoti e li aggiunge alla
-   porta di quella VM. Un gruppo vuoto non cambia cio' che la VM puo'
-   fare (le regole dei security group si sommano), ma la rende "membro"
-   del gruppo, cosi' la regola remote_group funziona subito;
-2. crea (o riusa) il gruppo `learned-<nome>` della VM e ne allinea le
-   regole a quelle approvate piu' le regole di base (DHCP e metadata,
-   engine.BASE_RULES): crea le mancanti e cancella le altre.
-   Ogni gruppo nuovo nasce vuoto: cloud.py cancella subito le regole di
-   uscita "tutto permesso" che Neutron vi aggiunge;
-3. assegna alla porta della VM solo `learned-<nome>` (piu' i gruppi
-   learned di cui e' membro per il punto 1), al posto dei gruppi
-   originali, che restano salvati per un eventuale rollback;
-4. attiva il logging DROP sul nuovo gruppo: da qui in avanti vengono
-   registrate solo le connessioni bloccate, per l'Anomaly Detector;
-5. porta la VM in stato ENFORCING.
+1. prepara i gruppi `learned-<nome>` delle altre VM citate da remote_group;
+2. crea o riusa `learned-<nome>` e ne allinea le regole (approvate piu'
+   BASE_RULES): crea le mancanti, cancella le altre;
+3. mette sulla porta il gruppo appreso al posto degli originali;
+4. attiva il logging DROP e porta la VM in ENFORCING.
 
-Per una VM gia' in ENFORCING il ciclo periodico ripete i controlli e
-corregge le differenze (riconciliazione): se qualcuno cambia a mano i
-gruppi della porta o le regole, vengono ripristinati. Ogni operazione e'
-idempotente: ripeterla quando tutto e' in ordine non cambia nulla.
+Ogni 30 secondi tick ripete apply anche sulle VM gia' applicate
+(riconciliazione): e' idempotente, corregge solo le differenze.
+I gruppi originali non vengono mai modificati: rollback li rimette.
 """
 
 import datetime
@@ -72,8 +60,7 @@ class Enforcer:
             learned_group_name(vm.name), vm.project_id, DESCRIPTION)
         self._sync_rules(vm, sg_id, groups)
 
-        # Restano solo il gruppo della VM e i gruppi learned di altre VM di
-        # cui la porta e' membro (punto 1); ogni altro gruppo viene tolto.
+        # Porta: il gruppo della VM piu' i learned di cui e' membro (punto 1)
         current = self.cloud.port_security_groups(vm.port_id)
         wanted = [sg_id] + self._memberships(current, exclude=sg_id)
         if sorted(current) != sorted(wanted):
@@ -90,9 +77,7 @@ class Enforcer:
 
         first_time = vm.state != lifecycle.ENFORCING
         if not (first_time or changed):
-            # Riconciliazione senza novita' nel database: non si salva, cosi'
-            # un comando della CLI lanciato in questo momento non va in
-            # conflitto con il servizio (per esempio un rollback).
+            # Nessuna novita': non si salva (niente conflitti con la CLI)
             return vm
         if first_time:
             # Da qui in avanti i DROP sono di competenza dell'Anomaly Detector
@@ -103,9 +88,7 @@ class Enforcer:
         try:
             self.store.save_vm(vm)
         except ConflictError:
-            # Mentre parlavamo con Neutron la VM e' stata cambiata (es. con
-            # `alerts accept`): non si sovrascrive, il prossimo giro
-            # applichera' la versione aggiornata.
+            # VM cambiata nel frattempo (alerts accept): ci pensa il giro dopo
             LOG.info("%s modificata nel frattempo: verra' riallineata al"
                      " prossimo giro", vm.name)
             return None
@@ -147,8 +130,7 @@ class Enforcer:
         for rule in proposed + list(engine.BASE_RULES):
             neutron = {field: None for field in _RULE_FIELDS}
             neutron.update(rule.to_neutron())
-            # Nella proposta il gruppo e' un nome logico ("vm:vm-web"):
-            # qui diventa l'ID reale del security group su Neutron
+            # Nome logico ("vm:vm-web") -> ID reale del gruppo su Neutron
             if neutron.get("remote_group_id"):
                 neutron["remote_group_id"] = groups[neutron["remote_group_id"]]
             rules.append(neutron)
@@ -189,9 +171,8 @@ class Enforcer:
         La VM torna in stato PROPOSED con la stessa proposta: si puo'
         riapprovare, oppure ripetere l'osservazione con learn.
         """
-        # Se il servizio salva la stessa VM proprio in questo momento il
-        # salvataggio fallisce (ConflictError): le operazioni su Neutron sono
-        # idempotenti, quindi si rilegge la VM e si ripete.
+        # ConflictError: il servizio ha salvato la VM nel frattempo. Si ripete,
+        # tanto le operazioni su Neutron sono idempotenti
         for attempt in range(3):
             try:
                 return self._rollback(name_or_id)
@@ -212,16 +193,11 @@ class Enforcer:
             raise lifecycle.LifecycleError(
                 f"{name_or_id}: il rollback vale solo per una VM con la"
                 " proposta applicata")
-        # Le appartenenze ai gruppi learned di altre VM restano, altrimenti
-        # le loro regole remote_group smetterebbero di valere per questa VM
+        # Restano le appartenenze ai learned di altre VM (le loro remote_group)
         current = self.cloud.port_security_groups(vm.port_id)
         memberships = self._memberships(current, exclude=vm.learned_sg_id)
-        # Anche il gruppo learned della VM resta sulla porta se altre VM lo
-        # citano nelle loro regole (es. vm-web accetta la 80 dal gruppo
-        # learned-vm-app): togliendolo, il rollback di vm-app romperebbe
-        # vm-web. Tenerlo non restringe nulla: le regole si sommano e quelle
-        # learned sono un sottoinsieme del traffico gia' permesso dai gruppi
-        # originali (piu' DHCP e metadata).
+        # Resta anche il proprio learned se altre VM lo citano (es. vm-web
+        # accetta la 80 da learned-vm-app). Non allarga: le regole si sommano
         if vm.learned_sg_id and vm.learned_sg_id in current and \
                 self.cloud.groups_referencing(vm.learned_sg_id):
             memberships.append(vm.learned_sg_id)

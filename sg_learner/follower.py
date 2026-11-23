@@ -1,26 +1,15 @@
 """Lettura continua del log di ovn-controller, come `tail -f`.
 
-LogFollower restituisce a ogni chiamata solo le righe aggiunte al file dopo
-l'ultima lettura. Tiene il file aperto, cosi' puo' continuare a leggerlo
-anche se nel frattempo viene rinominato, e gestisce le situazioni tipiche
-dei file di log:
+LogFollower restituisce solo le righe nuove e regge i casi tipici di un
+file di log:
 
-- riga incompleta: se ovn-controller sta ancora scrivendo l'ultima riga,
-  la parte gia' presente viene tenuta da parte e restituita completa al
-  giro successivo;
-- rotazione: logrotate rinomina il file (es. in .log.1) e ne crea uno
-  nuovo, vuoto. Il follower continua a leggere il file vecchio e passa al
-  nuovo solo quando il nuovo contiene dati. Cosi' non perde le ultime
-  righe scritte nel file vecchio, e funziona anche quando ovn-controller
-  non riapre il file e continua a scrivere in quello rinominato
-  (puo' succedere dopo un riavvio della macchina);
-- troncamento: se il file diventa piu' corto della posizione letta, si
-  riparte dall'inizio.
+- riga incompleta: tenuta da parte e restituita intera al giro dopo;
+- rotazione: passa al file nuovo solo quando contiene dati, cosi' non
+  perde le ultime righe del vecchio;
+- troncamento: riparte dall'inizio.
 
-La posizione raggiunta (inode e offset) viene salvata nella tabella
-`state` del Flow Store, cosi' dopo un riavvio del servizio la lettura
-riprende da dove era arrivata, anche se nel frattempo il file e' stato
-ruotato: il file con l'inode salvato viene cercato nella stessa cartella.
+Inode e offset sono salvati nel Flow Store: dopo un riavvio del servizio
+la lettura riprende da dove era arrivata, anche su un file ruotato.
 """
 
 import logging
@@ -96,11 +85,8 @@ class LogFollower:
         return True
 
     def _restore(self, start_at_end):
-        """Riprende la lettura dalla posizione salvata nella tabella `state`.
-
-        Cerca il file con l'inode salvato (anche se ruotato); se non c'e'
-        piu' legge il file attuale dall'inizio. Alla prima esecuzione parte
-        dalla fine del file, se `start_at_end`.
+        """Riprende dalla posizione salvata, cercando il file per inode
+        (anche se ruotato); se non c'e' piu', legge il log dall'inizio.
         """
         inode = self.store.get_state(_STATE_INODE)
         offset = self.store.get_state(_STATE_OFFSET)
@@ -110,8 +96,7 @@ class LogFollower:
                 LOG.info("Ripresa della lettura di %s dalla posizione %s",
                          saved, offset)
                 return
-            # Il file letto in precedenza non esiste piu': quello attuale
-            # contiene solo righe successive, si legge dall'inizio
+            # Il file di prima non c'e' piu': quello attuale e' tutto nuovo
             if self._open(self.path, 0):
                 LOG.info("File di log precedente non trovato: lettura di %s"
                          " dall'inizio", self.path)
@@ -131,8 +116,7 @@ class LogFollower:
 
     def _save(self):
         """Salva inode e offset nella tabella `state` del Flow Store."""
-        # La posizione salvata punta all'inizio dell'eventuale riga
-        # incompleta, cosi' dopo un riavvio viene riletta per intero.
+        # Offset all'inizio della riga incompleta: dopo un riavvio si rilegge
         self.store.set_state(_STATE_INODE, self._inode)
         self.store.set_state(_STATE_OFFSET, self._offset - len(self._partial))
 
@@ -171,8 +155,7 @@ class LogFollower:
         else:
             data = self._partial + data
 
-        # L'ultimo pezzo dopo l'ultimo "\n" e' una riga non ancora finita
-        # (o vuoto): resta da parte per il giro successivo
+        # Dopo l'ultimo "\n" resta una riga non finita: al prossimo giro
         *complete, self._partial = data.split(b"\n")
         if complete or data:
             self._save()

@@ -1,26 +1,16 @@
-"""Flow Store: memorizza in SQLite le connessioni osservate.
+"""Flow Store: l'unico accesso al database SQLite di SG-Learner.
 
-Il database non salva ogni singola connessione, ma un riepilogo: per ogni
-porta di VM (identificata dal MAC) e per ogni combinazione di direzione,
-protocollo, porta di servizio, altro capo e verdetto tiene il numero di
-connessioni e la prima e l'ultima volta in cui sono state viste.
+Tabelle:
 
-Esempio di riga:
-    vm fa:16:3e:9e:8d:c4 | ingress | tcp | 22 | 172.24.4.1 | allow | 8 conn.
+- observations: riepilogo delle connessioni, una riga per VM (MAC),
+  direzione, protocollo, porta di servizio, altro capo e verdetto, con
+  contatore e prima/ultima volta. Non si salva ogni connessione;
+- vms: le VM seguite, il loro stato e la proposta (JSON);
+- alerts: le anomalie dell'Anomaly Detector;
+- state: chiave/valore, per esempio la posizione nel log di OVN.
 
-La "porta di servizio" e' sempre la porta di destinazione del pacchetto che
-apre la connessione: per il traffico in ingresso e' la porta della VM
-(es. 22 per SSH), per quello in uscita la porta del servizio remoto
-(es. 80 verso il servizio metadati).
-
-Il database contiene anche:
-- la tabella `vms`, con le VM seguite da SG-Learner e il loro stato nel
-  ciclo di vita (osservazione, proposta, approvazione, applicazione);
-- la tabella `alerts`, con le anomalie trovate dall'Anomaly Detector nel
-  traffico bloccato delle VM gia' applicate;
-- una piccola tabella chiave/valore usata dal servizio per ricordare il
-  proprio stato (ad esempio fin dove ha letto il log di OVN), cosi' da
-  riprendere dopo un riavvio.
+Servizio, CLI e API usano lo stesso file: save_vm evita che un processo
+sovrascriva le modifiche di un altro (controllo su updated_at).
 """
 
 import contextlib
@@ -31,9 +21,8 @@ import sqlite3
 
 SCHEMA_VERSION = 4
 
-# SQLite tratta i NULL come valori sempre diversi tra loro, quindi non
-# funzionerebbero nella chiave primaria: i campi assenti (porte per ICMP,
-# tipo ICMP per TCP/UDP) vengono salvati come -1.
+# Campi assenti (porte per ICMP, tipo ICMP per TCP/UDP) salvati come -1:
+# in SQLite due NULL sono sempre diversi e romperebbero la chiave primaria
 _NONE = -1
 
 _SCHEMA = """
@@ -258,7 +247,8 @@ class FlowStore:
 
         Restituisce il numero di connessioni registrate.
         """
-        # dst_port del primo pacchetto = porta di servizio (vedi sopra)
+        # Porta di servizio = dst_port del primo pacchetto: in ingresso la
+        # porta della VM (22), in uscita quella del servizio remoto (53)
         rows = [
             (f.vm_mac, f.direction, f.protocol, _to_db(f.dst_port),
              _to_db(f.icmp_type), f.remote_ip, f.verdict, f.vm_ip,
@@ -334,15 +324,12 @@ class FlowStore:
     # --- VM seguite (ciclo di vita) ------------------------------------------
 
     def save_vm(self, vm):
-        """Inserisce o aggiorna una VM. Aggiorna anche updated_at.
+        """Inserisce o aggiorna una VM, con il suo updated_at.
 
-        Servizio, CLI e API sono processi diversi che modificano le stesse VM.
-        Per non perdere le modifiche dell'altro, una VM letta dal database
-        (updated_at valorizzato) viene salvata solo se nel frattempo nessuno
-        l'ha cambiata; altrimenti si solleva ConflictError e chi chiama
-        rilegge la VM e riprova. Esempio: senza questo controllo l'Enforcer,
-        nel giro di riconciliazione, potrebbe sovrascrivere un
-        `alerts accept` fatto dalla CLI mentre parla con Neutron.
+        Controllo ottimistico: una VM letta dal database si salva solo se
+        updated_at e' ancora quello letto, altrimenti ConflictError (chi
+        chiama rilegge e riprova). Cosi' nessun processo cancella le
+        modifiche di un altro.
         """
         previous = vm.updated_at
         now = datetime.datetime.now(datetime.timezone.utc)
@@ -369,8 +356,7 @@ class FlowStore:
                 if updated:
                     vm.updated_at = now
                     return
-                # Nessuna riga aggiornata: o la VM e' cambiata (conflitto)
-                # o non esiste piu', e allora si reinserisce sotto
+                # Nessuna riga: VM cambiata (conflitto) o cancellata (sotto)
                 if db.execute("SELECT 1 FROM vms WHERE server_id = ?",
                               (vm.server_id,)).fetchone():
                     raise ConflictError(
@@ -425,12 +411,9 @@ class FlowStore:
                      last_seen, ports=1, reopen_before=None):
         """Inserisce o aggiorna un'anomalia. Restituisce (alert, nuova).
 
-        Un'anomalia gia' chiusa (accettata o ignorata) non viene riaperta:
-        si aggiornano solo i conteggi. Fa eccezione un'anomalia chiusa
-        visto l'ultima volta prima di `reopen_before`: appartiene a un
-        periodo di applicazione precedente (la VM e' stata riosservata e
-        riapplicata), quindi gli stessi tentativi di oggi sono un'anomalia
-        nuova e la riga torna aperta.
+        Un'anomalia chiusa non si riapre, tranne se e' di un periodo di
+        applicazione precedente (vista l'ultima volta prima di
+        `reopen_before`).
         """
         key = (server_id, direction, protocol, _to_db(service_port),
                _to_db(icmp_type), remote_ip)
@@ -440,8 +423,7 @@ class FlowStore:
             " remote_ip = ?", key).fetchone()
         reopened = False
         with self._transaction() as db:
-            # Tre casi: anomalia nuova, chiusa di un periodo precedente
-            # (si riapre), gia' nota (si aggiornano solo i conteggi)
+            # Nuova, chiusa in un periodo precedente (si riapre) o gia' nota
             if existing is None:
                 db.execute(
                     "INSERT INTO alerts (server_id, kind, direction, protocol,"
@@ -465,8 +447,7 @@ class FlowStore:
                 db.execute(
                     "UPDATE alerts SET kind = ?, count = ?, ports = ?,"
                     " last_seen = ? WHERE id = ?",
-                    # Un'anomalia chiusa mantiene il tipo con cui e' stata
-                    # gestita, anche se nel frattempo e' cambiato
+                    # Una chiusa tiene il tipo con cui e' stata gestita
                     (kind if existing["status"] == "open"
                      else existing["kind"], count, ports,
                      _ts_to_db(last_seen), existing["id"]))

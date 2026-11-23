@@ -1,34 +1,16 @@
-"""Anomaly Detector: analizza il traffico bloccato delle VM applicate.
+"""Anomaly Detector: classifica il traffico bloccato delle VM applicate.
 
-Dopo l'applicazione, il logging DROP registra ogni connessione bloccata dal
-gruppo learned. Il detector le esamina per ogni VM in stato ENFORCING e le
-classifica:
+Algoritmo a soglie, deterministico. Per ogni VM in ENFORCING, sui DROP
+successivi all'applicazione (enforced_at):
 
-- scan: uno stesso IP ha provato almeno `scan_ports` porte diverse. E'
-  il comportamento tipico di una scansione (es. nmap): va segnalato con
-  priorita' e non diventa mai una regola;
-- candidate: lo stesso flusso e' stato bloccato almeno
-  `candidate_threshold` volte. Un tentativo che si ripete spesso e' piu'
-  probabilmente un servizio legittimo non osservato durante
-  l'apprendimento (es. un backup notturno): diventa una regola candidata;
-- alert: tentativo bloccato isolato, da conoscere ma non da permettere.
+1. stesso IP remoto con almeno `scan_ports` porte diverse -> scan; gli
+   alert singoli gia' creati per quell'IP diventano `in_scan`;
+2. ogni altro flusso: almeno `candidate_threshold` tentativi -> candidate
+   (forse un servizio legittimo non osservato), altrimenti alert.
 
-Un'anomalia chiusa (accettata o ignorata) non si riapre per nuovi tentativi
-uguali, finche' la VM resta applicata. Se la VM viene riosservata e
-riapplicata, inizia un nuovo periodo: gli stessi tentativi tornano a essere
-un'anomalia aperta.
-
-Una scansione viene riconosciuta solo quando le porte provate raggiungono
-la soglia: se il detector gira a meta' scansione, le prime porte diventano
-alert singoli. Quando poi la scansione viene riconosciuta, questi alert
-vengono chiusi (stato `in_scan`) e restano solo nella riga `scan`.
-
-Le anomalie finiscono nella tabella `alerts`. La decisione resta
-all'amministratore, con un'asimmetria voluta: SG-Learner non allarga mai
-da solo le regole. Accettare una candidata la aggiunge alla proposta e
-riporta la VM in APPROVED: l'Enforcer applica la nuova regola al giro
-successivo. Cosi' un attaccante non puo' "addestrare" il firewall ad
-aprirsi insistendo con i tentativi.
+SG-Learner non allarga mai le regole da solo: solo l'amministratore
+trasforma un'anomalia in regola (accept), e una scan non si accetta mai.
+Un'anomalia chiusa si riapre solo in un nuovo periodo di applicazione.
 """
 
 import collections
@@ -94,13 +76,17 @@ class AnomalyDetector:
         return vm.learn_until
 
     def analyze(self, vm):
-        """Aggiorna le anomalie di una VM. Restituisce quelle nuove."""
+        """Aggiorna le anomalie di una VM. Restituisce quelle nuove.
+
+        Due passate sui DROP dopo enforced_at: prima le scansioni (per IP
+        remoto), poi i flussi restanti, candidate o alert per soglia.
+        """
         since = self._since(vm)
         drops = self.store.observations(vm_mac=vm.mac, verdict="drop",
                                         since=since)
         new = []
 
-        # Scansioni: un IP che prova molte porte diverse
+        # Passata 1, scansioni: stesso IP, almeno scan_ports porte diverse
         by_remote = collections.defaultdict(list)
         for obs in drops:
             by_remote[(obs.direction, obs.remote_ip)].append(obs)
@@ -115,13 +101,12 @@ class AnomalyDetector:
                     first_seen=min(o.first_seen for o in items),
                     last_seen=max(o.last_seen for o in items),
                     ports=len(ports), reopen_before=since)
-                # reopen_before: un'anomalia chiusa in un periodo di
-                # applicazione precedente torna aperta (vedi sopra)
+                # reopen_before: riapre solo se chiusa in un periodo precedente
                 if is_new:
                     new.append(alert)
                 self._absorb_into_scan(vm, direction, remote)
 
-        # Singoli flussi bloccati: candidate se ricorrenti, altrimenti alert
+        # Passata 2, flussi singoli: candidate se ricorrenti, altrimenti alert
         for obs in drops:
             if (obs.direction, obs.remote_ip) in scanners:
                 continue
@@ -168,11 +153,8 @@ class AnomalyDetector:
         return alert
 
     def accept(self, alert_id):
-        """Trasforma un'anomalia in una regola da applicare.
-
-        La regola viene costruita dal Policy Engine come se il traffico
-        fosse stato osservato durante l'apprendimento, aggiunta alla
-        proposta, e la VM torna in APPROVED: l'Enforcer la applichera'.
+        """Trasforma un'anomalia in una regola: la aggiunge alla proposta e
+        riporta la VM in APPROVED, cosi' l'Enforcer la applica.
         """
         alert = self._open_alert(alert_id)
         if alert.kind == SCAN:

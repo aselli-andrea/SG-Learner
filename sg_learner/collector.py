@@ -1,28 +1,16 @@
-"""Flow Collector: interpreta le righe ACL log scritte da ovn-controller.
+"""Flow Collector: dalle righe del log di OVN alle connessioni.
 
-Con il Packet Logging di Neutron su ML2/OVN, ovn-controller scrive una riga
-per ogni pacchetto che attraversa un security group sotto logging, ad esempio:
+Con il Packet Logging di Neutron, ovn-controller scrive una riga `acl_log`
+per ogni pacchetto (esempi in tests/fixtures/ovn_acl_log_sample.txt).
+parse_line trasforma una riga in un Flow. A SG-Learner pero' interessano
+le connessioni, non i pacchetti:
 
-    2026-10-23T12:14:19.200Z|00140|acl_log(ovn_pinctrl0)|INFO|
-    name="neutron-<id-network-log>", verdict=allow, severity=info,
-    direction=to-lport: tcp,vlan_tci=0x0000,dl_src=...,dl_dst=...,
-    nw_src=172.24.4.1,nw_dst=10.0.0.37,...,tp_src=41168,tp_dst=22,
-    tcp_flags=syn
+- TCP: conta solo il SYN senza ACK;
+- ICMP: conta solo la echo request (tipo 8, o 128 per IPv6);
+- UDP: ogni datagramma, tranne le risposte.
 
-Questo modulo trasforma ogni riga in un oggetto Flow e riconosce l'inizio
-delle connessioni. OVN logga tutti i pacchetti (syn, ack, fin...), mentre a
-SG-Learner interessa contare le connessioni:
-
-- TCP: conta solo il pacchetto syn senza ack;
-- ICMP: conta solo la echo request (tipo 8, o 128 per ICMPv6);
-- UDP: ogni datagramma puo' aprire un flusso, tranne le risposte;
-- le ritrasmissioni e i pacchetti ripetuti vengono scartati dal
-  ConnectionDeduplicator, che raggruppa per 5-tupla in una finestra di tempo.
-  Per l'UDP scarta anche le risposte: un datagramma che fa la strada
-  inversa di uno visto da poco (es. la risposta DNS, da 8.8.8.8:53 verso
-  la porta casuale da cui la VM ha fatto la query). Senza questo controllo
-  ogni risposta diventerebbe una "connessione" in ingresso su una porta
-  casuale, e quindi una regola inutile nella proposta.
+ConnectionDeduplicator scarta ritrasmissioni e risposte UDP: senza, ogni
+risposta DNS diventerebbe una regola inutile su una porta casuale.
 """
 
 import dataclasses
@@ -217,12 +205,11 @@ def _udp_endpoints(flow):
 
 
 class ConnectionDeduplicator:
-    """Scarta le ritrasmissioni dello stesso tentativo di connessione.
+    """Scarta ritrasmissioni e risposte UDP.
 
-    Un pacchetto con la stessa connection_key di uno visto meno di
-    `window` secondi prima viene considerato una ripetizione. Per l'UDP
-    viene scartata anche la risposta a un datagramma visto meno di
-    `window` secondi prima (sorgente e destinazione scambiate).
+    Ripetizione: stessa connection_key entro `window` secondi. Risposta
+    UDP: datagramma con sorgente e destinazione scambiate rispetto a uno
+    visto da poco.
     """
 
     def __init__(self, window=60):
