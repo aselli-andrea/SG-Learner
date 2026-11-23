@@ -45,6 +45,7 @@ DB_FILE = "sg-learner.db"
 
 
 def parse_args(argv):
+    """Opzioni della riga di comando: --config-file e --debug."""
     parser = argparse.ArgumentParser(description="Servizio SG-Learner")
     parser.add_argument("--config-file", default=DEFAULT_CONFIG,
                         help="percorso del file di configurazione")
@@ -54,6 +55,7 @@ def parse_args(argv):
 
 
 def load_config(path):
+    """Legge la configurazione; si ferma senza file o senza [openstack]."""
     conf = configparser.ConfigParser()
     if not conf.read(path):
         raise SystemExit(f"File di configurazione non trovato: {path}")
@@ -127,6 +129,7 @@ class CollectionWorker:
     """Collega LogFollower, Flow Collector e Flow Store."""
 
     def __init__(self, follower, store, dedup_window=60):
+        """`dedup_window`: secondi in cui lo stesso flusso conta una volta."""
         self.follower = follower
         self.store = store
         self.dedup = collector.ConnectionDeduplicator(dedup_window)
@@ -156,6 +159,14 @@ class CollectionWorker:
 
 
 def main(argv=None):
+    """Programma del servizio devstack@sg-learner.
+
+    Legge la configurazione, si collega a OpenStack (riprovando se non e'
+    pronto), poi gira finche' non riceve SIGTERM: ogni `poll_interval`
+    secondi legge il log e salva le connessioni; ogni `interval` secondi
+    genera le proposte scadute, applica e riconcilia (Enforcer) e analizza
+    il traffico bloccato (Anomaly Detector).
+    """
     args = parse_args(sys.argv[1:] if argv is None else argv)
     logging.basicConfig(
         level=logging.DEBUG if args.debug else logging.INFO,

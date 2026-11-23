@@ -1,4 +1,15 @@
-"""Test del ciclo di vita delle VM e del CLI, con un OpenStack finto."""
+"""Test del ciclo di vita (sg_learner/lifecycle.py), della CLI e
+dell'avvio del servizio.
+
+FakeCloud sostituisce cloud.Cloud: trova le VM e registra il logging
+attivato, senza OpenStack.
+
+Cosa verificano:
+- parse_duration e le transizioni learn, generate, approve, reject;
+- la proposta generata solo a fine finestra (tick);
+- i comandi della CLI, gli errori e il messaggio senza openrc;
+- il servizio che aspetta OpenStack all'avvio (connect_with_retry).
+"""
 
 import datetime
 import io
@@ -229,8 +240,8 @@ def test_cli_reports_errors(run_cli, capsys):
 
 
 def test_cli_without_openrc_explains_what_to_do(tmp_path, monkeypatch, capsys):
-    """Caso visto dal vivo: senza `source openrc` il comando stampava un
-    traceback di keystoneauth invece di un messaggio comprensibile."""
+    """Senza `source openrc` la CLI deve stampare un messaggio comprensibile,
+    non un traceback di keystoneauth."""
     from keystoneauth1.exceptions.auth_plugins import MissingRequiredOptions
     from sg_learner import cli
 

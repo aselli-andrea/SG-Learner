@@ -1,4 +1,17 @@
-"""Test dell'Enforcer con un Neutron finto in memoria."""
+"""Test dell'Enforcer (sg_learner/enforcer.py).
+
+FakeNeutron e' un Neutron finto in memoria, con gli stessi metodi di
+cloud.Cloud: gruppi, regole, porte e network log. Come Neutron, aggiunge
+le regole "tutto in uscita" ai gruppi nuovi. Lo usano anche i test
+dell'API.
+
+Cosa verificano:
+- il gruppo learned con le sole regole approvate piu' quelle di base;
+- l'idempotenza e la riconciliazione delle modifiche manuali;
+- le regole remote_group e l'appartenenza delle altre VM ai gruppi;
+- il rollback, anche quando altre VM citano il gruppo della VM;
+- che le modifiche concorrenti della CLI non vadano perse.
+"""
 
 import dataclasses
 import datetime
@@ -297,8 +310,8 @@ def test_relearn_keeps_original_groups(store, neutron, enforcer, web):
 
 
 def test_cli_change_during_reconcile_is_not_lost(enforcer, neutron, store, web):
-    """Caso osservato dal vivo: `alerts accept` arriva mentre l'Enforcer
-    sta riconciliando la stessa VM."""
+    """`alerts accept` arriva mentre l'Enforcer sta riconciliando la stessa
+    VM: la modifica della CLI non deve andare persa."""
     enforcer.apply(store.get_vm("vm-web"))
     service_copy = store.get_vm("vm-web")       # letta dal servizio
 
@@ -319,7 +332,7 @@ def test_cli_change_during_reconcile_is_not_lost(enforcer, neutron, store, web):
 
 def test_rollback_keeps_own_group_when_other_vms_reference_it(
         enforcer, neutron, store, web):
-    """Caso trovato nella demo a 3 VM: vm-db accetta la 5432 dal gruppo
+    """vm-db accetta la 5432 dal gruppo
     learned-vm-web. Il rollback di vm-web non deve togliere vm-web da quel
     gruppo, altrimenti vm-db smetterebbe di accettarla."""
     db_port = neutron.vms["srv-db"]

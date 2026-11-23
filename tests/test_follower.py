@@ -1,4 +1,16 @@
-"""Test della lettura continua del log (LogFollower) e del CollectionWorker."""
+"""Test della lettura continua del log (sg_learner/follower.py).
+
+Usano file veri in una cartella temporanea, per simulare cio' che
+succede al log di ovn-controller.
+
+Cosa verificano:
+- la prima lettura dalla fine (o dall'inizio, se richiesto);
+- le righe incomplete, restituite quando sono finite;
+- la ripresa dopo un riavvio del servizio, anche su un file ruotato;
+- la rotazione, anche quando OVN continua a scrivere nel file vecchio;
+- il troncamento e il file mancante;
+- il CollectionWorker del servizio: dal log al Flow Store.
+"""
 
 import os
 import pathlib
@@ -79,7 +91,7 @@ def test_rotation_restarts_from_new_file(log, store):
 
 
 def test_rotation_without_reopen_keeps_reading_old_file(log, store):
-    """Caso osservato dal vivo: dopo la rotazione ovn-controller continua a
+    """Dopo la rotazione ovn-controller continua a
     scrivere nel file rinominato e quello nuovo resta vuoto."""
     follower = LogFollower(str(log), store)
     os.rename(log, str(log) + ".1")

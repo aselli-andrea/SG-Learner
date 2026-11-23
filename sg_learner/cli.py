@@ -13,8 +13,11 @@ Uso (dopo `source devstack/openrc admin admin`):
     sg-learner alerts accept 3               trasforma l'anomalia 3 in regola
     sg-learner alerts dismiss 3              ignora l'anomalia 3
 
-Il CLI usa le credenziali dell'utente che lo esegue (variabili OS_* di
-openrc): solo chi ha accesso amministrativo a OpenStack puo' usarlo.
+La CLI usa le credenziali dell'utente che la esegue (variabili OS_* di
+openrc): solo chi ha accesso amministrativo a OpenStack puo' usarla.
+Scrive le decisioni nello stesso database del servizio, che le esegue
+al giro successivo. Le stesse operazioni sono disponibili via HTTP con
+l'API REST (api.py).
 """
 
 import argparse

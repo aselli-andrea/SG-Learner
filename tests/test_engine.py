@@ -1,4 +1,17 @@
-"""Test del Policy Engine."""
+"""Test del Policy Engine (sg_learner/engine.py).
+
+Costruiscono osservazioni (Observation) e controllano la proposta che
+ne esce. build_proposal non chiama OpenStack: le altre VM del cloud
+sono passate come dizionario ip_to_group.
+
+Cosa verificano:
+- un IP esterno -> /32; almeno 5 IP esterni -> 0.0.0.0/0;
+- traffico da un'altra VM -> remote_group;
+- traffico bloccato riportato a parte, DHCP escluso;
+- regole in uscita, ICMP, IPv6, regole poco osservate;
+- i parametri per Neutron (to_neutron);
+- una proposta costruita dal log reale.
+"""
 
 import datetime
 import pathlib

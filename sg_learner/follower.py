@@ -13,7 +13,7 @@ dei file di log:
   nuovo solo quando il nuovo contiene dati. Cosi' non perde le ultime
   righe scritte nel file vecchio, e funziona anche quando ovn-controller
   non riapre il file e continua a scrivere in quello rinominato
-  (situazione osservata dal vivo dopo un riavvio);
+  (puo' succedere dopo un riavvio della macchina);
 - troncamento: se il file diventa piu' corto della posizione letta, si
   riparte dall'inizio.
 
@@ -33,6 +33,7 @@ _STATE_OFFSET = "ovn_log_offset"
 
 
 def _inode(path):
+    """Inode del file, o None se non esiste."""
     try:
         return os.stat(path).st_ino
     except FileNotFoundError:
@@ -40,6 +41,7 @@ def _inode(path):
 
 
 def _size(path):
+    """Dimensione del file in byte, 0 se non esiste."""
     try:
         return os.stat(path).st_size
     except FileNotFoundError:
@@ -80,6 +82,7 @@ class LogFollower:
     # --- Apertura e ripresa -------------------------------------------------
 
     def _open(self, path, offset):
+        """Apre il file in binario dalla posizione `offset`; False se manca."""
         self.close()
         try:
             # Lettura in binario: l'offset e' in byte, come st_size
@@ -93,6 +96,12 @@ class LogFollower:
         return True
 
     def _restore(self, start_at_end):
+        """Riprende la lettura dalla posizione salvata nella tabella `state`.
+
+        Cerca il file con l'inode salvato (anche se ruotato); se non c'e'
+        piu' legge il file attuale dall'inizio. Alla prima esecuzione parte
+        dalla fine del file, se `start_at_end`.
+        """
         inode = self.store.get_state(_STATE_INODE)
         offset = self.store.get_state(_STATE_OFFSET)
         if inode is not None and offset is not None:
@@ -115,11 +124,13 @@ class LogFollower:
                      self.path, self._offset)
 
     def close(self):
+        """Chiude il file aperto."""
         if self._file is not None:
             self._file.close()
             self._file = None
 
     def _save(self):
+        """Salva inode e offset nella tabella `state` del Flow Store."""
         # La posizione salvata punta all'inizio dell'eventuale riga
         # incompleta, cosi' dopo un riavvio viene riletta per intero.
         self.store.set_state(_STATE_INODE, self._inode)

@@ -2,7 +2,8 @@
 
 Raccogliere le chiamate in un unico modulo ha due vantaggi: il resto del
 codice non dipende dai dettagli delle API, e nei test questa classe puo'
-essere sostituita da una finta (vedi tests/test_lifecycle.py).
+essere sostituita da una finta (FakeCloud in tests/test_lifecycle.py,
+FakeNeutron in tests/test_enforcer.py).
 
 Il Packet Logging di Neutron non e' ancora coperto da openstacksdk, quindi
 le chiamate a /log/logs usano direttamente l'API REST tramite la sessione
@@ -91,6 +92,7 @@ class Cloud:
     # --- Security group e porte (usati dall'Enforcer) ---------------------------
 
     def port_security_groups(self, port_id):
+        """ID dei security group assegnati a una porta."""
         return list(self.conn.network.get_port(port_id).security_group_ids
                     or ())
 
@@ -100,6 +102,7 @@ class Cloud:
                 for sg_id in sg_ids}
 
     def set_port_security_groups(self, port_id, sg_ids):
+        """Sostituisce i security group di una porta con quelli indicati."""
         self.conn.network.update_port(port_id,
                                       security_group_ids=list(sg_ids))
 
@@ -143,16 +146,19 @@ class Cloud:
                 if rule.security_group_id != sg_id}
 
     def create_rule(self, sg_id, project_id, rule):
+        """Crea una regola; `rule` ha i campi di Neutron (to_neutron)."""
         self.conn.network.create_security_group_rule(
             security_group_id=sg_id, project_id=project_id, **rule)
 
     def delete_rule(self, rule_id):
+        """Cancella una regola; una regola gia' cancellata non e' un errore."""
         self.conn.network.delete_security_group_rule(rule_id,
                                                      ignore_missing=True)
 
     # --- Packet Logging di Neutron ---------------------------------------------
 
     def _request(self, method, path, **kwargs):
+        """Chiamata all'API REST di Neutron con la sessione di openstacksdk."""
         response = self.conn.network.request(path, method, **kwargs)
         # Trasforma gli errori HTTP (404, 409...) nelle eccezioni di
         # openstacksdk, come per le altre chiamate
@@ -160,6 +166,7 @@ class Cloud:
         return response.json() if response.content else None
 
     def network_logs(self):
+        """I network log esistenti (GET /log/logs)."""
         return self._request("GET", "/log/logs")["logs"]
 
     def enable_logging(self, security_group_ids, project_id, name,
@@ -188,6 +195,7 @@ class Cloud:
         return log_ids
 
     def disable_logging(self, log_ids):
+        """Cancella i network log indicati (DELETE /log/logs/<id>)."""
         for log_id in log_ids:
             try:
                 self._request("DELETE", f"/log/logs/{log_id}")

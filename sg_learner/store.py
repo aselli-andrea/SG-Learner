@@ -172,20 +172,24 @@ class Alert:
 
 
 def _to_db(value):
+    """None -> -1, per i campi che fanno parte della chiave primaria."""
     return _NONE if value is None else value
 
 
 def _from_db(value):
+    """-1 -> None: l'inverso di _to_db."""
     return None if value == _NONE else value
 
 
 def _ts_to_db(value):
+    """datetime -> testo ISO 8601 in UTC."""
     # Sempre in UTC e in formato ISO: cosi' il confronto tra stringhe in
     # SQL (es. last_seen >= ?) equivale al confronto tra istanti
     return value.astimezone(datetime.timezone.utc).isoformat()
 
 
 def _ts_from_db(value):
+    """Testo ISO 8601 -> datetime."""
     return datetime.datetime.fromisoformat(value)
 
 
@@ -201,6 +205,7 @@ class FlowStore:
     """Accesso al database SQLite di SG-Learner."""
 
     def __init__(self, path):
+        """Apre (o crea) il database: WAL, tabelle mancanti, migrazione."""
         self.path = str(path)
         self._db = sqlite3.connect(self.path)
         self._db.row_factory = sqlite3.Row
@@ -234,6 +239,7 @@ class FlowStore:
 
     @contextlib.contextmanager
     def _transaction(self):
+        """Scritture in blocco: commit se va bene, rollback se c'e' errore."""
         try:
             yield self._db
             self._db.commit()
@@ -330,13 +336,13 @@ class FlowStore:
     def save_vm(self, vm):
         """Inserisce o aggiorna una VM. Aggiorna anche updated_at.
 
-        Il servizio e la CLI sono due processi che modificano le stesse VM.
+        Servizio, CLI e API sono processi diversi che modificano le stesse VM.
         Per non perdere le modifiche dell'altro, una VM letta dal database
         (updated_at valorizzato) viene salvata solo se nel frattempo nessuno
         l'ha cambiata; altrimenti si solleva ConflictError e chi chiama
-        rilegge la VM e riprova. Caso osservato dal vivo: l'Enforcer, nel
-        giro di riconciliazione, sovrascriveva un `alerts accept` fatto
-        dalla CLI mentre stava parlando con Neutron.
+        rilegge la VM e riprova. Esempio: senza questo controllo l'Enforcer,
+        nel giro di riconciliazione, potrebbe sovrascrivere un
+        `alerts accept` fatto dalla CLI mentre parla con Neutron.
         """
         previous = vm.updated_at
         now = datetime.datetime.now(datetime.timezone.utc)
@@ -388,6 +394,7 @@ class FlowStore:
         return self._row_to_vm(row) if row else None
 
     def list_vms(self, state=None):
+        """Le VM seguite, tutte o solo quelle nello stato indicato."""
         query, params = "SELECT * FROM vms", []
         if state is not None:
             query += " WHERE state = ?"
@@ -470,6 +477,7 @@ class FlowStore:
         return self._row_to_alert(row), existing is None or reopened
 
     def list_alerts(self, server_id=None, status="open"):
+        """Le anomalie, filtrate per VM e stato (status=None: tutte)."""
         query, params = "SELECT * FROM alerts WHERE 1=1", []
         if server_id is not None:
             query += " AND server_id = ?"
@@ -481,11 +489,13 @@ class FlowStore:
         return [self._row_to_alert(r) for r in self._db.execute(query, params)]
 
     def get_alert(self, alert_id):
+        """Un'anomalia per ID, o None."""
         row = self._db.execute("SELECT * FROM alerts WHERE id = ?",
                                (alert_id,)).fetchone()
         return self._row_to_alert(row) if row else None
 
     def set_alert_status(self, alert_id, status):
+        """Cambia lo stato di un'anomalia: accepted, dismissed o in_scan."""
         with self._transaction() as db:
             db.execute("UPDATE alerts SET status = ? WHERE id = ?",
                        (status, alert_id))
@@ -507,11 +517,13 @@ class FlowStore:
     # --- Stato del servizio ---------------------------------------------------
 
     def get_state(self, key, default=None):
+        """Legge un valore della tabella chiave/valore `state`."""
         row = self._db.execute("SELECT value FROM state WHERE key = ?",
                                (key,)).fetchone()
         return row["value"] if row else default
 
     def set_state(self, key, value):
+        """Scrive un valore della tabella chiave/valore `state`."""
         with self._transaction() as db:
             db.execute(
                 "INSERT INTO state (key, value) VALUES (?, ?)"

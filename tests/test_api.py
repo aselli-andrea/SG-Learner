@@ -1,4 +1,19 @@
-"""Test dell'API REST con il client di prova di Flask e un Neutron finto."""
+"""Test dell'API REST (sg_learner/api.py).
+
+Usano il client di prova di Flask: le richieste HTTP non passano dalla
+rete. FakeCloud estende il Neutron finto dei test dell'Enforcer.
+Gli header X-Identity-Status e X-Roles simulano cio' che
+keystonemiddleware passa all'applicazione dopo aver verificato il token.
+
+Cosa verificano:
+- 401 senza identita' Keystone e 403 senza ruolo admin;
+- il ciclo completo learn, generate, approve via HTTP;
+- gli errori come codici HTTP (404, 409, 400);
+- elenco e chiusura delle anomalie;
+- una proposta approvata via API viene applicata dall'Enforcer;
+- il vero keystonemiddleware respinge una richiesta senza token anche
+  con header di identita' falsificati.
+"""
 
 import pytest
 

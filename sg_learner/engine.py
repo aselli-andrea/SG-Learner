@@ -13,7 +13,7 @@ Regole di costruzione della proposta:
    - DHCP e metadata sono coperti dalle regole di base (BASE_RULES), che
      l'Enforcer aggiunge sempre al gruppo learned. Con ML2/OVN Neutron
      NON consente il DHCP da solo: senza la regola di base, al riavvio
-     la VM non ottiene l'indirizzo (osservato dal vivo);
+     la VM non ottiene l'indirizzo;
    - la Neighbor Discovery IPv6 (ICMPv6 133-137) e' gestita da Neutron.
 3. Le connessioni vengono raggruppate per direzione, protocollo e porta
    di servizio (o tipo ICMP).
@@ -134,6 +134,7 @@ def options_from_config(conf):
 
 
 def _base_rule(direction, protocol, port, prefix):
+    """Una regola di base (DHCP o metadata), sempre nel gruppo learned."""
     return ProposedRule(
         direction=direction, protocol=protocol, port=port, icmp_type=None,
         ethertype="IPv4", remote_ip_prefix=prefix, remote_group=None,
@@ -151,6 +152,11 @@ BASE_RULES = (
 
 
 def _exclusion_reason(obs):
+    """Motivo per cui un'osservazione non diventa una regola, o None.
+
+    Esclusi: DHCP e metadata (coperti da BASE_RULES) e Neighbor Discovery
+    IPv6 (gestita da Neutron).
+    """
     if obs.protocol == "udp" and obs.service_port in _DHCP_PORTS:
         return "DHCP, coperto dalle regole di base"
     if (obs.direction != INGRESS and obs.remote_ip == METADATA_IP
@@ -162,11 +168,13 @@ def _exclusion_reason(obs):
 
 
 def _host_prefix(ip):
+    """Prefisso di un solo host: /32 per IPv4, /128 per IPv6."""
     address = ipaddress.ip_address(ip)
     return f"{address}/{address.max_prefixlen}"
 
 
 def _ethertype(ip):
+    """IPv4 o IPv6, come vuole il campo ethertype di Neutron."""
     return "IPv6" if ipaddress.ip_address(ip).version == 6 else "IPv4"
 
 

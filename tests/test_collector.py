@@ -1,4 +1,17 @@
-"""Test del Flow Collector su righe reali del log di ovn-controller."""
+"""Test del Flow Collector (sg_learner/collector.py).
+
+Usano righe copiate dal log reale di ovn-controller, quindi il parser
+e' provato sul formato esatto di OVN, e il file
+fixtures/ovn_acl_log_sample.txt (60 righe reali: TCP e ICMP, permessi e
+bloccati).
+
+Cosa verificano:
+- la lettura dei campi di una riga (direzione, IP, porte, flag, ICMP);
+- quale lato e' la VM in ingresso e in uscita;
+- l'inizio delle connessioni: SYN senza ACK, echo request;
+- le ritrasmissioni contate una volta e le risposte UDP scartate;
+- che ogni riga del log reale venga interpretata.
+"""
 
 import datetime
 import pathlib
@@ -10,7 +23,8 @@ FIXTURE = pathlib.Path(__file__).parent / "fixtures" / "ovn_acl_log_sample.txt"
 LOG_ID = "c9330f49-2b8c-4286-b101-ec10ab218886"
 VM_MAC = "fa:16:3e:9e:8d:c4"
 
-# Righe copiate dal log reale (test del 23/10/2026 su vm-test, 10.0.0.37)
+# Righe copiate dal log reale di ovn-controller (VM di prova vm-test,
+# 10.0.0.37)
 PING_IN = (
     "2026-10-23T12:14:19.198Z|00138|acl_log(ovn_pinctrl0)|INFO|"
     'name="neutron-c9330f49-2b8c-4286-b101-ec10ab218886", verdict=allow, '

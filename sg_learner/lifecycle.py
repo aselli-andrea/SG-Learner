@@ -6,6 +6,8 @@ Ogni VM seguita da SG-Learner attraversa questi stati:
     PROPOSED  --(approve)-->                   APPROVED
     PROPOSED  --(reject)-->                    REJECTED
     APPROVED  --(Enforcer)-->                  ENFORCING
+    ENFORCING --(rollback, enforcer.py)-->     PROPOSED
+    ENFORCING --(accept, detector.py)-->       APPROVED
     qualunque --(learn)-->                     LEARNING   (riapprendimento)
 
 - learn: attiva il Packet Logging sui security group della VM, azzera le
@@ -39,6 +41,7 @@ class LifecycleError(Exception):
 
 
 def _now():
+    """Ora attuale in UTC."""
     return datetime.datetime.now(datetime.timezone.utc)
 
 
@@ -114,6 +117,12 @@ class Lifecycle:
         return self._propose(vm, now or _now())
 
     def _propose(self, vm, now):
+        """Genera la proposta con il Policy Engine e porta la VM in PROPOSED.
+
+        Usata da generate (su richiesta) e da tick (a fine finestra). Salva
+        in vm.proposal le regole, il testo per l'amministratore e vm_groups:
+        per ogni gruppo logico "vm:<nome>", la VM che ne fara' parte.
+        """
         # IP delle altre VM -> loro gruppo: serve al Policy Engine per
         # scrivere regole remote_group invece di singoli indirizzi
         ip_to_group, group_to_server = self.cloud.vm_groups_by_ip(
@@ -181,4 +190,5 @@ class Lifecycle:
         return proposed
 
     def status(self):
+        """Tutte le VM seguite, per `sg-learner status`."""
         return self.store.list_vms()

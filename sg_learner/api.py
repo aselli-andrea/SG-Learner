@@ -58,10 +58,12 @@ _ERRORS = (
 
 
 def _ts(value):
+    """datetime -> testo ISO 8601 per il JSON (None resta None)."""
     return value.isoformat() if value else None
 
 
 def _vm_json(vm, with_proposal=False):
+    """Una VM in JSON; con with_proposal anche la proposta completa."""
     data = {
         "name": vm.name, "id": vm.server_id, "ip": vm.ip, "state": vm.state,
         "learn_until": _ts(vm.learn_until),
@@ -74,6 +76,7 @@ def _vm_json(vm, with_proposal=False):
 
 
 def _alert_json(alert, names):
+    """Un'anomalia in JSON; `names` traduce l'ID della VM nel suo nome."""
     return {
         "id": alert.id, "vm": names.get(alert.server_id, alert.server_id),
         "kind": alert.kind, "count": alert.count, "status": alert.status,
@@ -96,6 +99,7 @@ def create_app(data_dir, cloud_factory, engine_options=None,
     state = {"cloud": None}
 
     def cloud():
+        """Collegamento a OpenStack, creato alla prima richiesta."""
         if state["cloud"] is None:
             state["cloud"] = cloud_factory()
         return state["cloud"]
@@ -103,20 +107,24 @@ def create_app(data_dir, cloud_factory, engine_options=None,
     # Un FlowStore per richiesta: SQLite non condivide una connessione tra
     # thread, e cosi' ogni richiesta vede le ultime modifiche del servizio
     def store():
+        """Il FlowStore della richiesta in corso (flask.g)."""
         if "store" not in flask.g:
             flask.g.store = FlowStore(os.path.join(data_dir, DB_FILE))
         return flask.g.store
 
     @app.teardown_appcontext
     def _close_store(_exc):
+        """A fine richiesta chiude il database."""
         db = flask.g.pop("store", None)
         if db is not None:
             db.close()
 
     def manager():
+        """Ciclo di vita (Lifecycle) sul database della richiesta."""
         return lifecycle.Lifecycle(store(), cloud(), engine_options)
 
     def anomalies():
+        """Anomaly Detector sul database della richiesta."""
         return detector.AnomalyDetector(store(), cloud(),
                                         **(detector_options or {}))
 
@@ -124,6 +132,9 @@ def create_app(data_dir, cloud_factory, engine_options=None,
 
     @app.before_request
     def _require_admin():
+        """Prima di ogni richiesta: 401 senza identita' Keystone confermata,
+        403 senza ruolo admin. None lascia proseguire la richiesta.
+        """
         # Header impostati da keystonemiddleware dopo aver verificato il token
         if flask.request.headers.get("X-Identity-Status") != "Confirmed":
             return _error("token Keystone mancante o non valido", 401)
@@ -135,6 +146,7 @@ def create_app(data_dir, cloud_factory, engine_options=None,
     # --- Errori ------------------------------------------------------------------
 
     def _error(message, code):
+        """Risposta di errore in JSON {"error": ...} con il codice."""
         return flask.jsonify(error=message), code
 
     for exc_class, code in _ERRORS:
@@ -145,18 +157,22 @@ def create_app(data_dir, cloud_factory, engine_options=None,
 
     @app.get("/")
     def root():
+        """GET /: nome e versione del servizio."""
         return {"service": "sg-learner", "version": __version__,
                 "api": "/v1"}
 
     @app.get("/v1/vms")
     def list_vms():
+        """GET /v1/vms: tutte le VM seguite."""
         return {"vms": [_vm_json(vm) for vm in store().list_vms()]}
 
     @app.get("/v1/vms/<name>")
     def show_vm(name):
+        """GET /v1/vms/<vm>: una VM, con la proposta."""
         return _vm_json(_followed(name), with_proposal=True)
 
     def _followed(name):
+        """La VM seguita, o LookupError (404) se SG-Learner non la conosce."""
         vm = store().get_vm(name)
         if vm is None:
             raise LookupError(f"{name} non e' seguita da SG-Learner")
@@ -164,6 +180,10 @@ def create_app(data_dir, cloud_factory, engine_options=None,
 
     @app.post("/v1/vms/<name>/learn")
     def learn(name):
+        """POST /v1/vms/<vm>/learn: avvia l'osservazione.
+
+        Corpo facoltativo: {"duration": "30m"}.
+        """
         body = flask.request.get_json(silent=True) or {}
         duration = lifecycle.parse_duration(
             body.get("duration") or default_duration)
@@ -172,25 +192,30 @@ def create_app(data_dir, cloud_factory, engine_options=None,
 
     @app.post("/v1/vms/<name>/proposal/generate")
     def generate(name):
+        """POST /v1/vms/<vm>/proposal/generate: genera subito la proposta."""
         return _vm_json(manager().generate(name), with_proposal=True)
 
     @app.post("/v1/vms/<name>/proposal/approve")
     def approve(name):
+        """POST .../proposal/approve: approva (202, applica l'Enforcer)."""
         # Come per la CLI: l'Enforcer applica la proposta entro 30 secondi
         return _vm_json(manager().approve(name)), 202
 
     @app.post("/v1/vms/<name>/proposal/reject")
     def reject(name):
+        """POST /v1/vms/<vm>/proposal/reject: rifiuta la proposta."""
         return _vm_json(manager().reject(name))
 
     @app.post("/v1/vms/<name>/rollback")
     def rollback(name):
+        """POST /v1/vms/<vm>/rollback: rimette i gruppi originali."""
         return _vm_json(Enforcer(store(), cloud()).rollback(name))
 
     # --- Anomalie ----------------------------------------------------------------
 
     @app.get("/v1/alerts")
     def list_alerts():
+        """GET /v1/alerts: anomalie aperte (filtri ?vm=<vm>, ?all=true)."""
         vm_name = flask.request.args.get("vm")
         server_id = _followed(vm_name).server_id if vm_name else None
         everything = flask.request.args.get("all", "").lower() == "true"
@@ -201,12 +226,14 @@ def create_app(data_dir, cloud_factory, engine_options=None,
 
     @app.post("/v1/alerts/<int:alert_id>/accept")
     def accept(alert_id):
+        """POST /v1/alerts/<id>/accept: l'anomalia diventa una regola (202)."""
         vm = anomalies().accept(alert_id)
         return {"alert": alert_id, "status": "accepted",
                 "vm": _vm_json(vm)}, 202
 
     @app.post("/v1/alerts/<int:alert_id>/dismiss")
     def dismiss(alert_id):
+        """POST /v1/alerts/<id>/dismiss: ignora l'anomalia."""
         anomalies().dismiss(alert_id)
         return {"alert": alert_id, "status": "dismissed"}
 
@@ -234,6 +261,12 @@ def _section(conf, name):
 
 
 def main(argv=None):
+    """Programma del servizio devstack@sg-learner-api.
+
+    Legge la configurazione (si ferma senza [keystone_authtoken]), crea
+    l'applicazione, la mette dietro keystonemiddleware e la serve con
+    wsgiref su host e porta della sezione [api].
+    """
     parser = argparse.ArgumentParser(description="API REST di SG-Learner")
     parser.add_argument("--config-file", default=DEFAULT_CONFIG)
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
@@ -263,7 +296,7 @@ def main(argv=None):
     host = conf.get("api", "host", fallback=DEFAULT_HOST)
     port = conf.getint("api", "port", fallback=DEFAULT_PORT)
 
-    # wsgiref: server WSGI della libreria standard, un richiesta alla volta.
+    # wsgiref: server WSGI della libreria standard, una richiesta alla volta.
     # Basta per un'API usata dall'amministratore e non aggiunge dipendenze.
     server = simple_server.make_server(
         host, port, keystone_protected(app, auth_conf))

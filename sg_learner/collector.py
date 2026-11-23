@@ -22,7 +22,7 @@ SG-Learner interessa contare le connessioni:
   inversa di uno visto da poco (es. la risposta DNS, da 8.8.8.8:53 verso
   la porta casuale da cui la VM ha fatto la query). Senza questo controllo
   ogni risposta diventerebbe una "connessione" in ingresso su una porta
-  casuale (osservato dal vivo nell'installazione da zero del 06/11).
+  casuale, e quindi una regola inutile nella proposta.
 """
 
 import dataclasses
@@ -110,6 +110,7 @@ class Flow:
 
 
 def _parse_timestamp(value):
+    """Converte l'ora scritta da OVS in un datetime in UTC."""
     # Formato di OVS: 2026-10-23T12:14:19.200Z (sempre UTC)
     return datetime.datetime.strptime(
         value, "%Y-%m-%dT%H:%M:%S.%fZ"
@@ -129,16 +130,19 @@ def _parse_fields(text):
 
 
 def _int_or_none(value):
+    """Intero, o None se il campo manca o e' vuoto."""
     return int(value) if value not in (None, "") else None
 
 
 def _parse_tcp_flags(value):
+    """Converte "syn|ack" nell'insieme {"syn", "ack"}."""
     if not value or value == "0":
         return frozenset()
     return frozenset(value.split("|"))
 
 
 def _normalize_protocol(packet_type):
+    """Protocollo di trasporto, uguale per IPv4 e IPv6 (tcp6 -> tcp)."""
     # OVS usa "tcp6", "udp6" per IPv6: il protocollo di trasporto e' lo stesso
     return {"tcp6": "tcp", "udp6": "udp"}.get(packet_type, packet_type)
 
@@ -228,12 +232,18 @@ class ConnectionDeduplicator:
         self._udp_seen = {}
 
     def _is_udp_reply(self, flow):
+        """True se il datagramma fa la strada inversa di uno visto da poco."""
         src, dst = _udp_endpoints(flow)
         request = self._udp_seen.get((dst, src))
         return (request is not None
                 and flow.timestamp - request <= self.window)
 
     def is_new(self, flow):
+        """True se il flusso e' una connessione nuova da contare.
+
+        False per le risposte UDP e per le ripetizioni della stessa
+        connection_key entro `window` secondi (ritrasmissioni).
+        """
         if flow.protocol == "udp":
             reply = self._is_udp_reply(flow)
             self._udp_seen[_udp_endpoints(flow)] = flow.timestamp

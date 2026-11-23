@@ -1,4 +1,14 @@
-"""Test del Flow Store."""
+"""Test del Flow Store (sg_learner/store.py).
+
+Usano database SQLite veri in una cartella temporanea.
+
+Cosa verificano:
+- il riepilogo con contatore (stesso servizio = stessa riga);
+- altro capo o verdetto diversi = righe diverse; ICMP senza porte;
+- filtri, cancellazione per VM e persistenza dopo la riapertura;
+- il salvataggio di una VM rifiutato se un altro processo l'ha cambiata;
+- il log reale salvato nel database.
+"""
 
 import datetime
 import pathlib

@@ -154,6 +154,7 @@ class AnomalyDetector:
     # --- Decisioni dell'amministratore ------------------------------------------
 
     def _open_alert(self, alert_id):
+        """L'anomalia indicata, solo se esiste ed e' ancora aperta."""
         alert = self.store.get_alert(alert_id)
         if alert is None or alert.status != "open":
             raise lifecycle.LifecycleError(

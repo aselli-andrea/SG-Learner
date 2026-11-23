@@ -1,4 +1,17 @@
-"""Test dell'Anomaly Detector."""
+"""Test dell'Anomaly Detector (sg_learner/detector.py).
+
+I DROP vengono scritti direttamente nel Flow Store (funzione drop) per
+una VM gia' in stato enforcing, senza OpenStack.
+
+Cosa verificano:
+- tentativo isolato -> alert; flusso ripetuto -> candidate;
+- molte porte dallo stesso IP -> scan, anche riconosciuta a meta';
+- i DROP precedenti all'applicazione e il traffico permesso ignorati;
+- accept aggiunge la regola e riporta la VM in approved;
+- una scan non si accetta, si puo' solo ignorare;
+- un'anomalia chiusa resta chiusa, ma si riapre in un nuovo periodo;
+- i comandi `sg-learner alerts`.
+"""
 
 import datetime
 import io
@@ -98,7 +111,8 @@ def test_many_ports_from_one_ip_is_a_scan(store, vm, det):
 
 
 def test_scan_absorbs_alerts_seen_before_the_threshold(store, vm, det):
-    """Caso osservato dal vivo: il detector gira a meta' scansione."""
+    """Il detector gira a meta' scansione: gli alert gia' creati finiscono
+    nella scan quando questa viene riconosciuta."""
     store.record_many([drop(1, "10.0.0.2", 21), drop(2, "10.0.0.2", 23)])
     assert [a.kind for _, a in det.tick()] == ["alert", "alert"]
 
@@ -169,7 +183,7 @@ def test_dismissed_alert_stays_closed(store, vm, det):
 
 
 def test_dismissed_alert_reopens_after_a_new_enforcement(store, vm, det):
-    """Caso visto con tools/demo.sh: una scansione ignorata in una prova
+    """Una scansione ignorata in un periodo di applicazione
     precedente non deve nascondere la stessa scansione dopo una nuova
     osservazione e applicazione della VM."""
     store.record_many([drop(1, "10.0.0.2", 22)])

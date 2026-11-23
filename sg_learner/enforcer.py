@@ -42,6 +42,7 @@ _RULE_FIELDS = ("direction", "ethertype", "protocol", "port_range_min",
 
 
 def learned_group_name(vm_name):
+    """Nome del gruppo appreso di una VM: "vm-web" -> "learned-vm-web"."""
     return f"{LEARNED_PREFIX}{vm_name}"
 
 
@@ -91,7 +92,7 @@ class Enforcer:
         if not (first_time or changed):
             # Riconciliazione senza novita' nel database: non si salva, cosi'
             # un comando della CLI lanciato in questo momento non va in
-            # conflitto con il servizio (caso visto con la demo: rollback).
+            # conflitto con il servizio (per esempio un rollback).
             return vm
         if first_time:
             # Da qui in avanti i DROP sono di competenza dell'Anomaly Detector
@@ -202,6 +203,10 @@ class Enforcer:
         return None
 
     def _rollback(self, name_or_id):
+        """Un tentativo di rollback: gruppi originali sulla porta, log DROP
+        spento, VM in PROPOSED. Solleva ConflictError se la VM cambia nel
+        frattempo (rollback lo ripete).
+        """
         vm = self.store.get_vm(name_or_id)
         if vm is None or vm.state != lifecycle.ENFORCING:
             raise lifecycle.LifecycleError(
@@ -216,7 +221,7 @@ class Enforcer:
         # learned-vm-app): togliendolo, il rollback di vm-app romperebbe
         # vm-web. Tenerlo non restringe nulla: le regole si sommano e quelle
         # learned sono un sottoinsieme del traffico gia' permesso dai gruppi
-        # originali (piu' DHCP e metadata). Caso trovato nella demo a 3 VM.
+        # originali (piu' DHCP e metadata).
         if vm.learned_sg_id and vm.learned_sg_id in current and \
                 self.cloud.groups_referencing(vm.learned_sg_id):
             memberships.append(vm.learned_sg_id)
