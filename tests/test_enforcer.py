@@ -10,7 +10,7 @@ Cosa verificano:
 - l'idempotenza e la riconciliazione delle modifiche manuali;
 - le regole remote_group e l'appartenenza delle altre VM ai gruppi;
 - il rollback, anche quando altre VM citano il gruppo della VM;
-- che le modifiche concorrenti della CLI non vadano perse.
+- che le modifiche concorrenti arrivate dall'API non vadano perse.
 """
 
 import dataclasses
@@ -309,17 +309,17 @@ def test_relearn_keeps_original_groups(store, neutron, enforcer, web):
     assert vm.learned_sg_id is not None
 
 
-def test_cli_change_during_reconcile_is_not_lost(enforcer, neutron, store, web):
+def test_api_change_during_reconcile_is_not_lost(enforcer, neutron, store, web):
     """`alerts accept` arriva mentre l'Enforcer sta riconciliando la stessa
-    VM: la modifica della CLI non deve andare persa."""
+    VM: la modifica fatta tramite l'API non deve andare persa."""
     enforcer.apply(store.get_vm("vm-web"))
     service_copy = store.get_vm("vm-web")       # letta dal servizio
 
-    cli_copy = store.get_vm("vm-web")           # la CLI accetta una regola
-    ssh = next(r for r in cli_copy.proposal["rules"] if r["port"] == 22)
-    cli_copy.proposal["rules"].append(dict(ssh, port=8080))
-    cli_copy.state = lifecycle.APPROVED
-    store.save_vm(cli_copy)
+    api_copy = store.get_vm("vm-web")           # l'API accetta una regola
+    ssh = next(r for r in api_copy.proposal["rules"] if r["port"] == 22)
+    api_copy.proposal["rules"].append(dict(ssh, port=8080))
+    api_copy.state = lifecycle.APPROVED
+    store.save_vm(api_copy)
 
     enforcer.apply(service_copy)                 # riconciliazione in corso
     assert store.get_vm("vm-web").state == lifecycle.APPROVED  # non sovrascrive
@@ -351,7 +351,7 @@ def test_rollback_keeps_own_group_when_other_vms_reference_it(
 
 def test_reconcile_without_changes_does_not_save(enforcer, neutron, store, web):
     """Se la riconciliazione non cambia nulla la VM non viene salvata: un
-    comando della CLI lanciato nello stesso momento non va in conflitto."""
+    comando arrivato all'API nello stesso momento non va in conflitto."""
     enforcer.apply(store.get_vm("vm-web"))
     before = store.get_vm("vm-web").updated_at
 

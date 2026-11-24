@@ -10,7 +10,7 @@ Cosa verificano:
 - accept aggiunge la regola e riporta la VM in approved;
 - una scan non si accetta, si puo' solo ignorare;
 - un'anomalia chiusa resta chiusa, ma si riapre in un nuovo periodo;
-- i comandi `sg-learner alerts`.
+- i comandi `sg-learner alerts`, che passano dall'API.
 """
 
 import datetime

@@ -201,4 +201,3 @@ def test_proposal_from_real_log(tmp_path):
     assert all(r.port != 80 or r.direction == "egress"
                for r in proposal.rules), "la porta 80 in ingresso era bloccata"
     assert any(b.service_port == 80 for b in proposal.blocked)
-    print(proposal.summary())

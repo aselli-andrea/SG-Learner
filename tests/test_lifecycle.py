@@ -270,8 +270,6 @@ def test_cli_reports_errors(run_cli, app, capsys):
     assert "serve il ruolo admin" in capsys.readouterr().err
 
     class ApiDown:
-        session = None
-
         def request(self, *args, **kwargs):
             raise ks_exceptions.ConnectFailure("connessione rifiutata")
 

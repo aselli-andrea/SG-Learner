@@ -148,17 +148,17 @@ def test_real_log_into_store(store):
 
 
 def test_stale_vm_is_not_saved_over_a_newer_one(store):
-    """Due processi (servizio e CLI) leggono la stessa VM: vince il primo
+    """Due processi (servizio e API) leggono la stessa VM: vince il primo
     salvataggio, il secondo riceve ConflictError invece di sovrascrivere."""
     store.save_vm(VmRecord(
         server_id="srv", name="vm", project_id="p", port_id="port",
         mac="fa:16:3e:00:00:09", ip="10.0.0.9", state="enforcing",
         security_groups=[], log_ids=[]))
     service_copy = store.get_vm("vm")
-    cli_copy = store.get_vm("vm")
+    api_copy = store.get_vm("vm")
 
-    cli_copy.state = "approved"
-    store.save_vm(cli_copy)
+    api_copy.state = "approved"
+    store.save_vm(api_copy)
     service_copy.ip = "10.0.0.99"
 
     with pytest.raises(ConflictError):
