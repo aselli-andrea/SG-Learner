@@ -28,9 +28,12 @@ SG_LEARNER_INTERVAL=${SG_LEARNER_INTERVAL:-30}
 # Log delle ACL scritto da ovn-controller
 SG_LEARNER_OVN_LOG=${SG_LEARNER_OVN_LOG:-/var/log/ovn/ovn-controller.log}
 
-# Packet Logging di Neutron (valori minimi indicati dalla documentazione)
+# Packet Logging di Neutron
 SG_LEARNER_ML2_CONF=${SG_LEARNER_ML2_CONF:-/etc/neutron/plugins/ml2/ml2_conf.ini}
-# rate_limit: pacchetti registrati al secondo. Valori piu' alti perdono meno
-# connessioni con traffico intenso, a costo di piu' CPU per ovn-controller
-SG_LEARNER_LOG_RATE_LIMIT=${SG_LEARNER_LOG_RATE_LIMIT:-100}
-SG_LEARNER_LOG_BURST_LIMIT=${SG_LEARNER_LOG_BURST_LIMIT:-25}
+# rate_limit: pacchetti registrati al secondo; burst_limit: quanti in piu' in
+# un picco. OVN registra ogni pacchetto della connessione, non solo il SYN:
+# con i minimi della documentazione (100 e 25) piu' SSH ravvicinate superano
+# il limite e il SYN di una puo' andare perso, cosi' la connessione non viene
+# contata. Valori piu' alti costano piu' CPU a ovn-controller
+SG_LEARNER_LOG_RATE_LIMIT=${SG_LEARNER_LOG_RATE_LIMIT:-500}
+SG_LEARNER_LOG_BURST_LIMIT=${SG_LEARNER_LOG_BURST_LIMIT:-250}

@@ -193,7 +193,8 @@ def main(argv=None):
                                   engine.options_from_config(conf))
     enforcer = Enforcer(store, cloud)
     anomalies = detector.AnomalyDetector(
-        store, cloud, **detector.options_from_config(conf))
+        store, cloud, engine_options=engine.options_from_config(conf),
+        **detector.options_from_config(conf))
 
     # Ciclo principale. Ogni fase ha il suo try/except: un errore in una
     # (es. Neutron non risponde) viene registrato ma non ferma le altre

@@ -12,6 +12,7 @@ Cosa verificano:
 - il servizio che aspetta OpenStack all'avvio (connect_with_retry).
 """
 
+import dataclasses
 import datetime
 import io
 
@@ -38,7 +39,7 @@ class FakeCloud:
 
     def find_vm(self, name_or_id):
         if name_or_id not in self.vms:
-            raise LookupError(f"VM non trovata: {name_or_id}")
+            raise lifecycle.NotFoundError(f"VM non trovata: {name_or_id}")
         return self.vms[name_or_id]
 
     def enable_logging(self, security_group_ids, project_id, name,
@@ -60,6 +61,14 @@ def flow(minutes, remote, port, verdict="allow"):
         src_ip=remote, dst_ip=WEB.ip, src_port=40000 + minutes,
         dst_port=port, tcp_flags=frozenset({"syn"}),
     )
+
+
+def flow_now(remote, port):
+    """Come flow, ma adesso: per le osservazioni avviate all'ora reale (CLI
+    e API), che contano solo il traffico dopo l'inizio della finestra."""
+    return dataclasses.replace(
+        flow(0, remote, port),
+        timestamp=datetime.datetime.now(datetime.timezone.utc))
 
 
 @pytest.fixture
@@ -224,7 +233,8 @@ def test_cli_full_flow(run_cli, tmp_path):
     assert "Logging attivo su 1 security group" in out
 
     with FlowStore(tmp_path / "sg-learner.db") as s:
-        s.record(flow(1, "172.24.4.1", 22))
+        # Connessione di adesso: la CLI avvia l'osservazione all'ora reale
+        s.record(flow_now("172.24.4.1", 22))
 
     code, out = run_cli("status")
     assert "vm-web" in out and "learning" in out
@@ -330,3 +340,24 @@ def test_service_gives_up_after_all_attempts(monkeypatch):
     with pytest.raises(ConnectionError):
         service.connect_with_retry(None, "log", lambda: False, attempts=3,
                                    delay=1, sleep=lambda s: None)
+
+
+def test_traffic_before_the_window_is_not_in_the_proposal(manager, store):
+    manager.learn("vm-web", duration=1800, now=T0)
+    # Letta dopo learn, ma avvenuta prima dell'inizio della finestra
+    store.record_many([flow(-5, "172.24.4.9", 3306),
+                       flow(1, "172.24.4.1", 22)])
+
+    vm = manager.generate("vm-web", now=T0 + datetime.timedelta(minutes=2))
+
+    assert [r["port"] for r in vm.proposal["rules"]] == [22]
+
+
+def test_tick_error_on_one_vm_does_not_stop_the_service(manager, cloud):
+    manager.learn("vm-web", duration=60, now=T0)
+
+    def broken(exclude_server_id=None):
+        raise RuntimeError("Neutron non risponde")
+    cloud.vm_groups_by_ip = broken
+
+    assert manager.tick(now=T0 + datetime.timedelta(hours=1)) == []

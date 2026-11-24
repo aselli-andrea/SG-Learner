@@ -5,7 +5,7 @@
     PROPOSED  --(reject)-->   REJECTED
     ENFORCING --(rollback)--> PROPOSED
     ENFORCING --(accept di un'anomalia)-->  APPROVED
-    qualunque --(learn)-->    LEARNING
+    non applicata --(learn)-->  LEARNING   (se applicata: prima rollback)
 
 approve e reject scrivono solo la decisione nel database: su Neutron
 agisce l'Enforcer (enforcer.py), al giro successivo del servizio.
@@ -13,6 +13,7 @@ agisce l'Enforcer (enforcer.py), al giro successivo del servizio.
 
 import dataclasses
 import datetime
+import logging
 
 from sg_learner import engine
 from sg_learner.store import ConflictError, VmRecord
@@ -25,9 +26,19 @@ REJECTED = "rejected"
 
 DEFAULT_LEARN_DURATION = 3600  # secondi
 
+LOG = logging.getLogger(__name__)
+
 
 class LifecycleError(Exception):
     """Operazione non valida nello stato attuale della VM."""
+
+
+class NotFoundError(LookupError):
+    """VM o anomalia inesistente (l'API risponde 404)."""
+
+
+class InvalidInputError(ValueError):
+    """Dato scritto dall'amministratore non valido (l'API risponde 400)."""
 
 
 def _now():
@@ -46,9 +57,9 @@ def parse_duration(text):
     try:
         seconds = int(float(value) * factor)
     except ValueError:
-        raise ValueError(f"Durata non valida: {text}") from None
+        raise InvalidInputError(f"Durata non valida: {text}") from None
     if seconds <= 0:
-        raise ValueError(f"La durata deve essere positiva: {text}")
+        raise InvalidInputError(f"La durata deve essere positiva: {text}")
     return seconds
 
 
@@ -73,13 +84,23 @@ class Lifecycle:
         """Avvia (o riavvia) l'osservazione di una VM."""
         now = now or _now()
         port = self.cloud.find_vm(name_or_id)
+        previous = self.store.get_vm(port.server_id)
+        # Con la proposta applicata il gruppo appreso resterebbe sulla porta
+        # durante la nuova osservazione: il traffico nuovo verrebbe solo
+        # bloccato. Prima si torna ai gruppi originali con rollback
+        if previous and previous.state in (APPROVED, ENFORCING):
+            wait = (" (attendere che l'Enforcer la applichi)"
+                    if previous.state == APPROVED else "")
+            raise LifecycleError(
+                f"{port.server_name} e' nello stato '{previous.state}':"
+                f" eseguire prima sg-learner rollback {port.server_name}"
+                f"{wait}")
         log_ids = self.cloud.enable_logging(
             port.security_group_ids, port.project_id,
             name=f"sg-learner-{port.server_name}")
         # Le osservazioni vecchie non entrano nella nuova proposta
         self.store.forget(port.mac)
         # VM gia' seguita: restano i gruppi originali (rollback) e il learned
-        previous = self.store.get_vm(port.server_id)
         originals = (previous.security_groups if previous
                      else list(port.security_group_ids))
         vm = VmRecord(
@@ -113,9 +134,13 @@ class Lifecycle:
         # IP delle altre VM -> gruppo: per regole remote_group, non per IP
         ip_to_group, group_to_server = self.cloud.vm_groups_by_ip(
             exclude_server_id=vm.server_id)
+        # Solo il traffico della finestra: una riga vista per intero prima di
+        # learn_started (pacchetti letti subito dopo forget) non conta
+        observations = [o for o in self.store.observations(vm_mac=vm.mac)
+                        if not vm.learn_started
+                        or o.last_seen >= vm.learn_started]
         proposal = engine.build_proposal(
-            self.store.observations(vm_mac=vm.mac), vm.mac, ip_to_group,
-            **self.engine_options)
+            observations, vm.mac, ip_to_group, **self.engine_options)
         vm.proposal = {
             "generated_at": now.isoformat(),
             "total_connections": proposal.total_connections,
@@ -168,10 +193,14 @@ class Lifecycle:
         proposed = []
         for vm in self.store.list_vms(state=LEARNING):
             if vm.learn_until and vm.learn_until <= now:
+                # Un errore su una VM non ferma le altre
                 try:
                     proposed.append(self._propose(vm, now))
                 except ConflictError:
                     pass        # cambiata dall'API: si riprova al giro dopo
+                except Exception:
+                    LOG.exception("%s: proposta non generata, si riprova"
+                                  " al giro dopo", vm.name)
         return proposed
 
     def status(self):

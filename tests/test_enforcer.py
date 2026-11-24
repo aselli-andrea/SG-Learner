@@ -33,6 +33,7 @@ class FakeNeutron:
     def __init__(self):
         self.ids = (f"id-{n}" for n in itertools.count(1))
         self.groups = {"sg-orig": "sg-test"}          # ID -> nome
+        self.owners = {}                              # ID appreso -> VM
         self.rules = {}                               # ID -> regola
         self.ports = {"port-web": ["sg-orig"], "port-db": ["sg-orig"]}
         self.vms = {
@@ -45,7 +46,12 @@ class FakeNeutron:
         self.writes = 0
 
     def find_vm(self, name_or_id):
+        if name_or_id not in self.vms:
+            raise lifecycle.NotFoundError(f"VM non trovata: {name_or_id}")
         return self.vms[name_or_id]
+
+    def server_ids(self):
+        return set(self.vms)
 
     def port_security_groups(self, port_id):
         return list(self.ports[port_id])
@@ -54,16 +60,19 @@ class FakeNeutron:
         self.writes += 1
         self.ports[port_id] = list(sg_ids)
 
-    def security_group_names(self, sg_ids):
-        return {g: self.groups[g] for g in sg_ids}
+    def learned_groups(self, sg_ids):
+        return [g for g in sg_ids if g in self.owners]
 
-    def ensure_security_group(self, name, project_id, description=""):
-        for sg_id, sg_name in self.groups.items():
-            if sg_name == name:
+    def ensure_learned_group(self, server_id, name, project_id,
+                             description=""):
+        # Come cloud.Cloud: si ritrova dalla VM (il segno), non dal nome
+        for sg_id, owner in self.owners.items():
+            if owner == server_id:
                 return sg_id
         self.writes += 1
         sg_id = next(self.ids)
         self.groups[sg_id] = name
+        self.owners[sg_id] = server_id
         # Come Neutron: ogni gruppo nuovo permette tutto in uscita...
         for ethertype in ("IPv4", "IPv6"):
             self.rules[next(self.ids)] = {
@@ -107,6 +116,9 @@ class FakeNeutron:
     def disable_logging(self, log_ids):
         for log_id in log_ids:
             self.logs.pop(log_id, None)
+
+    def missing_logs(self, log_ids):
+        return [log_id for log_id in log_ids if log_id not in self.logs]
 
 
 def obs(port, remote, direction="ingress", protocol="tcp", icmp_type=None,
@@ -269,7 +281,7 @@ def test_rollback_keeps_membership_of_other_vms_groups(
     enforcer.apply(store.get_vm("vm-web"))
     # Un'altra VM (vm-app) ha reso vm-web membro del suo gruppo learned
     neutron.ports["port-web"].append(
-        neutron.ensure_security_group("learned-vm-app", "demo"))
+        neutron.ensure_learned_group("srv-app", "learned-vm-app", "demo"))
 
     enforcer.rollback("vm-web")
 
@@ -294,13 +306,21 @@ def test_tick_applies_approved_vms(enforcer, store, web):
     assert enforcer.tick() == []                   # gia' applicata
 
 
-def test_relearn_keeps_original_groups(store, neutron, enforcer, web):
+def test_relearn_needs_rollback_and_keeps_original_groups(
+        store, neutron, enforcer, web):
     enforcer.apply(store.get_vm("vm-web"))
+    manager = lifecycle.Lifecycle(store, neutron)
+    neutron.vm_groups_by_ip = lambda exclude_server_id=None: ({}, {})
+
+    # Con la proposta applicata il gruppo appreso bloccherebbe il traffico
+    # nuovo durante l'osservazione: prima si fa rollback
+    with pytest.raises(lifecycle.LifecycleError, match="rollback"):
+        manager.learn("srv-web", now=T0)
+    assert store.get_vm("vm-web").state == lifecycle.ENFORCING
+    enforcer.rollback("vm-web")
     neutron.vms["srv-web"] = dataclasses.replace(
         neutron.vms["srv-web"],
         security_group_ids=tuple(neutron.ports["port-web"]))
-    manager = lifecycle.Lifecycle(store, neutron)
-    neutron.vm_groups_by_ip = lambda exclude_server_id=None: ({}, {})
 
     vm = manager.learn("srv-web", now=T0)
 
@@ -376,3 +396,61 @@ def test_rollback_retries_when_the_service_saves_meanwhile(
 
     assert vm.state == lifecycle.PROPOSED and len(calls) == 2
     assert neutron.ports["port-web"] == ["sg-orig"]
+
+
+def test_vm_deleted_from_nova_leaves_the_database(enforcer, neutron, store,
+                                                  web):
+    enforcer.tick()
+    del neutron.vms["srv-web"]                    # cancellata da Nova
+
+    enforcer.tick()
+
+    assert store.get_vm("vm-web") is None
+    assert neutron.logs == {}                     # log DROP spento
+
+
+def test_error_on_one_vm_does_not_stop_the_others(enforcer, neutron, store,
+                                                  web):
+    # vm-db cita una VM che non esiste piu': la sua applicazione fallisce
+    approved_vm(store, neutron.vms["srv-db"],
+                [obs(5432, "10.0.0.99", mac="fa:16:3e:00:00:02")],
+                ip_to_group={"10.0.0.99": "vm:vm-old"},
+                vm_groups={"vm:vm-old": "srv-old"})
+
+    applied = enforcer.tick()
+
+    assert [vm.name for vm in applied] == ["vm-web"]
+    # vm-db esiste in Nova: resta, e si riprova al giro dopo
+    assert store.get_vm("vm-db").state == lifecycle.APPROVED
+
+
+def test_group_named_learned_is_not_taken_as_membership(enforcer, neutron,
+                                                        store, web):
+    # Un gruppo creato a mano con un nome che sembra appreso
+    neutron.groups["sg-hand"] = "learned-qualcosa"
+    neutron.ports["port-web"].append("sg-hand")
+
+    vm = enforcer.apply(store.get_vm("vm-web"))
+
+    assert neutron.ports["port-web"] == [vm.learned_sg_id]
+
+
+def test_deleted_drop_log_is_recreated(enforcer, neutron, store, web):
+    enforcer.apply(store.get_vm("vm-web"))
+    neutron.logs.clear()                          # cancellato a mano
+
+    enforcer.tick()
+
+    vm = store.get_vm("vm-web")
+    assert neutron.logs == {vm.enforce_log_ids[0]: (vm.learned_sg_id, "DROP")}
+
+
+def test_first_apply_forgets_old_drops(enforcer, store, web):
+    from tests.test_detector import drop
+    store.record_many([drop(0, "10.0.0.5", 873),
+                       drop(0, "172.24.4.1", 22, verdict="allow")])
+
+    enforcer.apply(store.get_vm("vm-web"))
+
+    assert [o.verdict for o in store.observations(vm_mac=web.mac)] == \
+        ["allow"]

@@ -221,3 +221,14 @@ def test_cli_alerts(store, vm, det, tmp_path):
 
     code, out = run("alerts", "list")
     assert "Nessuna anomalia aperta" in out
+
+
+def test_accept_uses_the_engine_options(store, vm):
+    det = detector.AnomalyDetector(store, candidate_threshold=5,
+                                   engine_options={"low_confidence_below": 10})
+    store.record_many([drop(i, "10.0.0.5", 873) for i in range(6)])
+    [(_, alert)] = det.tick()
+
+    [rule] = det.accept(alert.id).proposal["rules"]
+
+    assert rule["low_confidence"]                 # 6 < 10, come in [engine]

@@ -11,7 +11,8 @@
 #   tools/demo.sh run        il ciclo completo: osservazione, traffico,
 #                            proposta, approvazione, verifica, anomalie
 #   tools/demo.sh test       solo la verifica: cosa passa e cosa no
-#   tools/demo.sh clean      cancella VM, floating IP e gruppi della demo
+#   tools/demo.sh clean      cancella VM, floating IP e gruppi della demo e
+#                            riparte con il database di SG-Learner vuoto
 #
 # Opzione: --no-pause (prima del comando) non aspetta Invio tra un passo
 # e l'altro. Le decisioni dell'amministratore (approvazione, rollback)
@@ -26,13 +27,15 @@ FLAVOR=${DEMO_FLAVOR:-m1.tiny}
 NETWORK=${DEMO_NETWORK:-private}
 PUBLIC=${DEMO_PUBLIC:-public}
 CIRROS_PASSWORD=${DEMO_CIRROS_PASSWORD:-gocubsgo}
-EXTERNAL_IPS="172.24.4.101 172.24.4.102 172.24.4.103 172.24.4.104 172.24.4.105"
+# Client esterni: 5 indirizzi liberi della rete pubblica, scelti a run
+EXTERNAL_BASE=${DEMO_EXTERNAL_BASE:-172.24.4}
+EXTERNAL_IPS=""
 SG_LEARNER=${SG_LEARNER:-/opt/stack/data/venv/bin/sg-learner}
 PYTHON=${PYTHON:-/opt/stack/data/venv/bin/python}
 DB=${SG_LEARNER_DB:-/opt/stack/data/sg-learner/sg-learner.db}
 PAUSE=1
 
-declare -A IP FIP
+declare -A IP FIP MAC
 
 # --- Aspetto -------------------------------------------------------------------
 
@@ -69,6 +72,7 @@ load_ips() {
         [[ -n $port ]] || die "$vm non esiste: lancia prima 'tools/demo.sh setup'"
         IP[$vm]=$(openstack port show "$port" -f json -c fixed_ips |
                   grep -oE '10\.[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+        MAC[$vm]=$(openstack port show "$port" -f value -c mac_address)
         FIP[$vm]=$(openstack floating ip list --port "$port" -f value -c "Floating IP Address" | head -1)
         [[ -n ${FIP[$vm]} ]] || die "$vm non ha un floating IP"
     done
@@ -111,29 +115,37 @@ probe() {   # probe <descrizione> <atteso: passa|bloccato> <comando...>
     fi
 }
 
-show_observations() {   # solo le VM della demo
-    "$PYTHON" - "$DB" "${IP[vm-web]}" "${IP[vm-db]}" "${IP[vm-app]}" <<'EOF'
+show_observations() {   # solo le VM della demo, riconosciute dal MAC
+    "$PYTHON" - "$DB" "${MAC[vm-web]}" "${MAC[vm-db]}" "${MAC[vm-app]}" <<'EOF'
 import sqlite3, sys
 db = sqlite3.connect(sys.argv[1])
-ips = sys.argv[2:]
+macs = sys.argv[2:]
 print(f"  {'VM':11} {'DIR':8} {'SERVIZIO':10} {'ALTRO CAPO':16} {'VERDETTO':9} CONN.")
 for ip, d, p, port, remote, v, n in db.execute(
         "SELECT vm_ip, direction, protocol, service_port, remote_ip, verdict,"
-        " count FROM observations WHERE vm_ip IN (?, ?, ?)"
-        " ORDER BY vm_ip, direction, service_port", ips):
+        " count FROM observations WHERE vm_mac IN (?, ?, ?)"
+        " ORDER BY vm_ip, direction, service_port", macs):
     svc = p if port == -1 else f"{p}/{port}"
     print(f"  {ip:11} {d:8} {svc:10} {remote:16} {v:9} {n}")
 EOF
 }
 
 # Gli IP dei client esterni non devono essere floating IP gia' assegnati
-external_ips_free() {
-    local used ip
-    used=$(openstack floating ip list -f value -c "Floating IP Address")
-    for ip in $EXTERNAL_IPS; do
-        grep -qx "$ip" <<< "$used" && return 1
+external_ips_free() {   # sceglie 5 indirizzi non usati sulla rete pubblica
+    local used n ip
+    # Tutti gli indirizzi della rete pubblica: router, floating IP, porte
+    used=$(openstack port list --network "$PUBLIC" -f value -c "Fixed IP Addresses" |
+           grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+'
+           openstack floating ip list -f value -c "Floating IP Address")
+    EXTERNAL_IPS=""
+    for n in $(seq 101 250); do
+        ip="$EXTERNAL_BASE.$n"
+        grep -qx "$ip" <<< "$used" && continue
+        ip -4 addr show | grep -q " $ip/" && continue
+        EXTERNAL_IPS+="$ip "
+        [[ $(wc -w <<< "$EXTERNAL_IPS") -eq 5 ]] && return 0
     done
-    return 0
+    return 1
 }
 
 # --- setup / services / clean ----------------------------------------------------
@@ -208,10 +220,17 @@ cmd_clean() {
         fi
         openstack server show "$vm" > /dev/null 2>&1 && show openstack server delete --wait "$vm"
     done
-    for sg in learned-vm-web learned-vm-db learned-vm-app "$SG_OPEN"; do
-        openstack security group show "$sg" > /dev/null 2>&1 && show openstack security group delete "$sg"
+    # Per ID: dopo piu' demo possono esistere gruppi con lo stesso nome
+    for sg in $(openstack security group list -f value -c ID -c Name |
+                awk '$2 ~ /^learned-vm-(web|db|app)$/ || $2 == "'"$SG_OPEN"'" {print $1}'); do
+        show openstack security group delete "$sg"
     done
-    say "Le VM restano nel database di SG-Learner come storico; i network log dei gruppi cancellati li rimuove Neutron."
+    # Database vuoto: la demo successiva riparte senza VM, osservazioni e
+    # anomalie vecchie. Servizio e API si fermano prima, per non scriverci
+    show sudo systemctl stop devstack@sg-learner devstack@sg-learner-api
+    show sudo rm -f "$DB" "$DB-wal" "$DB-shm"
+    show sudo systemctl start devstack@sg-learner devstack@sg-learner-api
+    say "Database di SG-Learner svuotato; i network log dei gruppi cancellati li rimuove Neutron."
 }
 
 # --- verifica --------------------------------------------------------------------
@@ -287,7 +306,7 @@ cmd_run() {
             sudo ip addr del "$ip/24" dev br-ex
         done
     else
-        say "Gli indirizzi $EXTERNAL_IPS sono in uso come floating IP: salto questo passo"
+        say "Non trovo 5 indirizzi liberi in $EXTERNAL_BASE.101-250: salto questo passo"
     fi
     say "Attendo che il servizio salvi le ultime connessioni..."
     sleep 10

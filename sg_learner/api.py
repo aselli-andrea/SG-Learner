@@ -46,10 +46,12 @@ ADMIN_ROLE = "admin"
 
 # Errori previsti -> codice HTTP (gli stessi che la CLI mostra come messaggio)
 _ERRORS = (
-    (LookupError, 404),                 # VM o anomalia inesistente
+    (lifecycle.NotFoundError, 404),     # VM o anomalia inesistente
     (lifecycle.LifecycleError, 409),    # operazione non valida nello stato
     (ConflictError, 409),               # modificata nel frattempo: riprovare
-    (ValueError, 400),                  # durata non valida
+    (lifecycle.InvalidInputError, 400), # durata non valida
+    # Eccezioni specifiche del progetto: un errore interno (KeyError...)
+    # non diventa 404 o 400, ma resta un 500
 )
 
 
@@ -122,6 +124,7 @@ def create_app(data_dir, cloud_factory, engine_options=None,
     def anomalies():
         """Anomaly Detector sul database della richiesta."""
         return detector.AnomalyDetector(store(), cloud(),
+                                        engine_options=engine_options,
                                         **(detector_options or {}))
 
     # --- Autorizzazione --------------------------------------------------------
@@ -168,10 +171,11 @@ def create_app(data_dir, cloud_factory, engine_options=None,
         return _vm_json(_followed(name), with_proposal=True)
 
     def _followed(name):
-        """La VM seguita, o LookupError (404) se SG-Learner non la conosce."""
+        """La VM seguita, o NotFoundError (404) se SG-Learner non la conosce."""
         vm = store().get_vm(name)
         if vm is None:
-            raise LookupError(f"{name} non e' seguita da SG-Learner")
+            raise lifecycle.NotFoundError(
+                f"{name} non e' seguita da SG-Learner")
         return vm
 
     @app.post("/v1/vms/<name>/learn")

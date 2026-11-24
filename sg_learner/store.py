@@ -261,11 +261,25 @@ class FlowStore:
                 db.executemany(_UPSERT, rows)
         return len(rows)
 
-    def forget(self, vm_mac):
-        """Cancella le osservazioni di una VM (per un nuovo apprendimento)."""
+    def forget(self, vm_mac, verdict=None):
+        """Cancella le osservazioni di una VM (per un nuovo apprendimento).
+
+        Con `verdict` cancella solo quelle con quel verdetto ("drop").
+        """
+        query, params = "DELETE FROM observations WHERE vm_mac = ?", [vm_mac]
+        if verdict is not None:
+            query += " AND verdict = ?"
+            params.append(verdict)
         with self._transaction() as db:
-            cur = db.execute("DELETE FROM observations WHERE vm_mac = ?",
-                             (vm_mac,))
+            cur = db.execute(query, params)
+        return cur.rowcount
+
+    def delete_vm(self, server_id):
+        """Cancella una VM seguita e le sue anomalie (VM non piu' in Nova)."""
+        with self._transaction() as db:
+            db.execute("DELETE FROM alerts WHERE server_id = ?", (server_id,))
+            cur = db.execute("DELETE FROM vms WHERE server_id = ?",
+                             (server_id,))
         return cur.rowcount
 
     # --- Lettura -------------------------------------------------------------

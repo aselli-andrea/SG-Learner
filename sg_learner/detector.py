@@ -59,9 +59,11 @@ class AnomalyDetector:
 
     def __init__(self, store, cloud=None,
                  candidate_threshold=DEFAULT_CANDIDATE_THRESHOLD,
-                 scan_ports=DEFAULT_SCAN_PORTS):
+                 scan_ports=DEFAULT_SCAN_PORTS, engine_options=None):
         self.store = store
         self.cloud = cloud
+        # Le stesse opzioni del Policy Engine usate per la proposta
+        self.engine_options = engine_options or {}
         self.candidate_threshold = candidate_threshold
         self.scan_ports = scan_ports
 
@@ -180,7 +182,8 @@ class AnomalyDetector:
         if self.cloud is not None:
             ip_to_group, group_to_server = self.cloud.vm_groups_by_ip(
                 exclude_server_id=vm.server_id)
-        proposal = engine.build_proposal(allowed, vm.mac, ip_to_group)
+        proposal = engine.build_proposal(allowed, vm.mac, ip_to_group,
+                                         **self.engine_options)
 
         rules = vm.proposal.setdefault("rules", [])
         for rule in proposal.rules:

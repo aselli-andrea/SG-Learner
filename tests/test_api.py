@@ -33,7 +33,7 @@ class FakeCloud(FakeNeutron):
         for port in self.vms.values():
             if name_or_id in (port.server_id, port.server_name):
                 return port
-        raise LookupError(f"VM non trovata: {name_or_id}")
+        raise lifecycle.NotFoundError(f"VM non trovata: {name_or_id}")
 
     def vm_groups_by_ip(self, exclude_server_id=None):
         groups = {f"vm:{p.server_name}": sid for sid, p in self.vms.items()
@@ -79,8 +79,8 @@ def test_full_cycle_learn_generate_approve(client, db):
     assert vm.state == lifecycle.LEARNING
 
     # SSH dall'host e traffico da vm-db: diventano /32 e remote_group
-    from tests.test_lifecycle import flow
-    db.record(flow(1, "172.24.4.1", 22))
+    from tests.test_lifecycle import flow_now
+    db.record(flow_now("172.24.4.1", 22))
 
     response = client.post("/v1/vms/vm-web/proposal/generate", headers=ADMIN)
     assert response.status_code == 200
@@ -148,8 +148,8 @@ def test_alerts_list_and_dismiss(client, db):
 def test_approved_proposal_is_applied_by_the_enforcer(client, db, neutron):
     from sg_learner.enforcer import Enforcer
     client.post("/v1/vms/vm-web/learn", headers=ADMIN)
-    from tests.test_lifecycle import flow
-    db.record(flow(1, "172.24.4.1", 22))
+    from tests.test_lifecycle import flow_now
+    db.record(flow_now("172.24.4.1", 22))
     client.post("/v1/vms/vm-web/proposal/generate", headers=ADMIN)
     client.post("/v1/vms/vm-web/proposal/approve", headers=ADMIN)
 
@@ -183,3 +183,15 @@ def test_keystonemiddleware_rejects_requests_without_token(tmp_path, neutron):
     client = werkzeug.test.Client(protected)
     response = client.get("/v1/vms", headers=ADMIN)   # header falsificati
     assert response.status_code == 401
+
+
+def test_internal_errors_are_not_404(client, neutron):
+    # Un KeyError e' un LookupError, ma e' un errore interno: non un 404
+    def broken(name_or_id):
+        raise KeyError("port_id")
+    neutron.find_vm = broken
+    client.application.testing = False
+
+    response = client.post("/v1/vms/vm-web/learn", headers=ADMIN)
+
+    assert response.status_code == 500

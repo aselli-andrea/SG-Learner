@@ -9,8 +9,13 @@ apply, per una VM approvata:
 4. attiva il logging DROP e porta la VM in ENFORCING.
 
 Ogni 30 secondi tick ripete apply anche sulle VM gia' applicate
-(riconciliazione): e' idempotente, corregge solo le differenze.
-I gruppi originali non vengono mai modificati: rollback li rimette.
+(riconciliazione): e' idempotente, corregge solo le differenze, e
+ricrea il log DROP se qualcuno lo ha cancellato. Le VM cancellate da Nova
+escono dal database. I gruppi originali non vengono mai modificati:
+rollback li rimette.
+
+I gruppi appresi si riconoscono dal segno nella descrizione (cloud.py,
+LEARNED_MARK), che li lega alla VM: il nome serve solo all'amministratore.
 """
 
 import datetime
@@ -56,8 +61,9 @@ class Enforcer:
                 " una proposta approvata")
 
         groups = self._prepare_remote_groups(vm)
-        sg_id = self.cloud.ensure_security_group(
-            learned_group_name(vm.name), vm.project_id, DESCRIPTION)
+        sg_id = self.cloud.ensure_learned_group(
+            vm.server_id, learned_group_name(vm.name), vm.project_id,
+            DESCRIPTION)
         self._sync_rules(vm, sg_id, groups)
 
         # Porta: il gruppo della VM piu' i learned di cui e' membro (punto 1)
@@ -69,6 +75,11 @@ class Enforcer:
                      vm.name, learned_group_name(vm.name))
 
         changed = vm.learned_sg_id != sg_id
+        # Log DROP mai creato, o cancellato a mano: senza, il Detector non
+        # vedrebbe piu' niente. Si ricrea
+        if vm.enforce_log_ids and self.cloud.missing_logs(vm.enforce_log_ids):
+            LOG.warning("%s: log DROP non piu' presente, lo ricreo", vm.name)
+            vm.enforce_log_ids = []
         if not vm.enforce_log_ids:
             vm.enforce_log_ids = self.cloud.enable_logging(
                 [sg_id], vm.project_id, name=f"sg-learner-{vm.name}-drop",
@@ -80,9 +91,12 @@ class Enforcer:
             # Nessuna novita': non si salva (niente conflitti con l'API)
             return vm
         if first_time:
-            # Da qui in avanti i DROP sono di competenza dell'Anomaly Detector
+            # Da qui in avanti i DROP sono di competenza dell'Anomaly Detector.
+            # I DROP vecchi si cancellano: le righe sono aggregate, e un DROP
+            # dell'osservazione gonfierebbe i conteggi delle anomalie
             vm.proposal["enforced_at"] = datetime.datetime.now(
                 datetime.timezone.utc).isoformat()
+            self.store.forget(vm.mac, verdict="drop")
         vm.learned_sg_id = sg_id
         vm.state = lifecycle.ENFORCING
         try:
@@ -98,19 +112,18 @@ class Enforcer:
         return vm
 
     def _memberships(self, sg_ids, exclude=None):
-        """Gruppi learned di altre VM tra quelli indicati."""
-        names = self.cloud.security_group_names(sg_ids)
-        return [g for g in sg_ids if g != exclude and
-                names.get(g, "").startswith(LEARNED_PREFIX)]
+        """Gruppi appresi di altre VM tra quelli indicati (dal segno nella
+        descrizione, non dal nome)."""
+        return [g for g in self.cloud.learned_groups(sg_ids) if g != exclude]
 
     def _prepare_remote_groups(self, vm):
         """Gruppo learned di ogni VM citata da remote_group: {nome: ID}."""
         groups = {}
         for group, server_id in (vm.proposal.get("vm_groups") or {}).items():
             remote = self.cloud.find_vm(server_id)
-            sg_id = self.cloud.ensure_security_group(
-                learned_group_name(remote.server_name), remote.project_id,
-                DESCRIPTION)
+            sg_id = self.cloud.ensure_learned_group(
+                remote.server_id, learned_group_name(remote.server_name),
+                remote.project_id, DESCRIPTION)
             current = self.cloud.port_security_groups(remote.port_id)
             if sg_id not in current:
                 self.cloud.set_port_security_groups(remote.port_id,
@@ -155,15 +168,43 @@ class Enforcer:
     def tick(self):
         """Applica le proposte approvate e riconcilia quelle applicate.
 
-        Restituisce le VM appena applicate.
+        Restituisce le VM appena applicate. Un errore su una VM (es. una VM
+        citata da remote_group cancellata) non ferma le altre.
         """
+        self.forget_deleted_vms()
         applied = []
-        for vm in self.store.list_vms(state=lifecycle.APPROVED):
-            if self.apply(vm) is not None:
-                applied.append(vm)
-        for vm in self.store.list_vms(state=lifecycle.ENFORCING):
-            self.apply(vm)
+        for vm in (self.store.list_vms(state=lifecycle.APPROVED)
+                   + self.store.list_vms(state=lifecycle.ENFORCING)):
+            approved = vm.state == lifecycle.APPROVED
+            try:
+                if self.apply(vm) is not None and approved:
+                    applied.append(vm)
+            except Exception:
+                LOG.exception("%s: applicazione non riuscita, si riprova al"
+                              " giro dopo", vm.name)
         return applied
+
+    def forget_deleted_vms(self):
+        """Toglie dal database le VM che non esistono piu' in Nova.
+
+        Il controllo e' sull'elenco completo dei server: una VM resta se
+        esiste, anche quando un'altra operazione su di lei fallisce.
+        Restituisce i nomi delle VM tolte.
+        """
+        alive = self.cloud.server_ids()
+        removed = []
+        for vm in self.store.list_vms():
+            if vm.server_id in alive:
+                continue
+            # Solo il log DROP del suo gruppo appreso: i log dell'osservazione
+            # stanno sui gruppi originali e possono servire ad altre VM
+            self.cloud.disable_logging(vm.enforce_log_ids)
+            self.store.forget(vm.mac)
+            self.store.delete_vm(vm.server_id)
+            removed.append(vm.name)
+            LOG.info("%s non esiste piu' in Nova: tolta da SG-Learner",
+                     vm.name)
+        return removed
 
     def rollback(self, name_or_id):
         """Rimette sulla porta i security group originali.

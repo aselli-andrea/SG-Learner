@@ -164,3 +164,11 @@ def test_stale_vm_is_not_saved_over_a_newer_one(store):
     with pytest.raises(ConflictError):
         store.save_vm(service_copy)
     assert store.get_vm("vm").state == "approved"
+
+
+def test_forget_only_drops_and_delete_vm(store):
+    store.record_many([make_flow(0), make_flow(1, verdict="drop")])
+
+    assert store.forget(VM_MAC, verdict="drop") == 1
+    assert [o.verdict for o in store.observations()] == ["allow"]
+    assert store.delete_vm("non-esiste") == 0

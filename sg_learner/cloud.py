@@ -11,12 +11,19 @@ import logging
 
 from openstack import exceptions
 
+from sg_learner.lifecycle import NotFoundError
+
 LOG = logging.getLogger(__name__)
 
 # Eventi del Packet Logging: ALL durante l'osservazione (traffico permesso
 # e bloccato), DROP dopo l'applicazione (solo bloccato, per il Detector)
 LOG_EVENT_ALL = "ALL"
 LOG_EVENT_DROP = "DROP"
+
+# Segno nella descrizione dei gruppi appresi: lega il gruppo alla sua VM.
+# Un gruppo si riconosce da questo segno e non dal nome, che chiunque
+# potrebbe usare (o che resta a una VM cancellata con lo stesso nome)
+LEARNED_MARK = "[sg-learner:{}]"
 
 
 @dataclasses.dataclass(frozen=True)
@@ -45,10 +52,10 @@ class Cloud:
         server = self.conn.compute.find_server(
             name_or_id, ignore_missing=True, all_projects=True)
         if server is None:
-            raise LookupError(f"VM non trovata: {name_or_id}")
+            raise NotFoundError(f"VM non trovata: {name_or_id}")
         ports = list(self.conn.network.ports(device_id=server.id))
         if not ports:
-            raise LookupError(f"La VM {server.name} non ha porte di rete")
+            raise NotFoundError(f"La VM {server.name} non ha porte di rete")
         # Limite noto: con piu' interfacce si segue solo la prima
         port = ports[0]
         if len(ports) > 1:
@@ -61,6 +68,10 @@ class Cloud:
             mac=port.mac_address, ip=ip,
             security_group_ids=tuple(port.security_group_ids or ()),
         )
+
+    def server_ids(self):
+        """ID di tutte le VM esistenti in Nova (in qualunque progetto)."""
+        return {s.id for s in self.conn.compute.servers(all_projects=True)}
 
     def vm_groups_by_ip(self, exclude_server_id=None):
         """Mappa {IP di una VM: "vm:<nome>"} per il traffico tra VM.
@@ -92,27 +103,36 @@ class Cloud:
         return list(self.conn.network.get_port(port_id).security_group_ids
                     or ())
 
-    def security_group_names(self, sg_ids):
-        """{ID: nome} dei security group indicati."""
-        return {sg_id: self.conn.network.get_security_group(sg_id).name
-                for sg_id in sg_ids}
+    def learned_groups(self, sg_ids):
+        """Tra i gruppi indicati, quelli appresi da SG-Learner (con il segno)."""
+        found = []
+        for sg_id in sg_ids:
+            description = self.conn.network.get_security_group(
+                sg_id).description or ""
+            if description.endswith("]") and "[sg-learner:" in description:
+                found.append(sg_id)
+        return found
 
     def set_port_security_groups(self, port_id, sg_ids):
         """Sostituisce i security group di una porta con quelli indicati."""
         self.conn.network.update_port(port_id,
                                       security_group_ids=list(sg_ids))
 
-    def ensure_security_group(self, name, project_id, description=""):
-        """ID del gruppo `name` nel progetto, creato se non esiste.
+    def ensure_learned_group(self, server_id, name, project_id,
+                             description=""):
+        """ID del gruppo appreso della VM `server_id`, creato se non esiste.
 
-        Un gruppo nuovo viene svuotato delle regole "tutto in uscita" che
-        Neutron aggiunge: allargherebbero i permessi della porta.
+        Il gruppo si ritrova dal segno LEARNED_MARK nella descrizione, non
+        dal nome. Un gruppo nuovo viene svuotato delle regole "tutto in
+        uscita" che Neutron aggiunge: allargherebbero i permessi della porta.
         """
-        for sg in self.conn.network.security_groups(name=name,
-                                                    project_id=project_id):
-            return sg.id
+        mark = LEARNED_MARK.format(server_id)
+        for sg in self.conn.network.security_groups(project_id=project_id):
+            if (sg.description or "").endswith(mark):
+                return sg.id
         sg = self.conn.network.create_security_group(
-            name=name, project_id=project_id, description=description)
+            name=name, project_id=project_id,
+            description=f"{description} {mark}".strip())
         for rule in self.security_group_rules(sg.id):
             self.delete_rule(rule["id"])
         LOG.info("Creato il security group %s (%s), senza regole",
@@ -162,6 +182,11 @@ class Cloud:
     def network_logs(self):
         """I network log esistenti (GET /log/logs)."""
         return self._request("GET", "/log/logs")["logs"]
+
+    def missing_logs(self, log_ids):
+        """Tra i network log indicati, quelli che non esistono piu'."""
+        existing = {log["id"] for log in self.network_logs()}
+        return [log_id for log_id in log_ids if log_id not in existing]
 
     def enable_logging(self, security_group_ids, project_id, name,
                        event=LOG_EVENT_ALL):
