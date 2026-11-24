@@ -16,6 +16,10 @@ rollback li rimette.
 
 I gruppi appresi si riconoscono dal segno nella descrizione (cloud.py,
 LEARNED_MARK), che li lega alla VM: il nome serve solo all'amministratore.
+
+Collegamenti: legge le VM approvate dal Flow Store (store.py), dove le ha
+scritte l'API (approve, alerts accept); agisce su Neutron solo tramite
+cloud.py. tick lo chiama il servizio, rollback l'API.
 """
 
 import datetime
@@ -48,6 +52,7 @@ class Enforcer:
     """Applica e mantiene i security group appresi."""
 
     def __init__(self, store, cloud):
+        """`store`: il Flow Store; `cloud`: l'accesso a Neutron (cloud.py)."""
         self.store = store
         self.cloud = cloud
 
@@ -151,6 +156,8 @@ class Enforcer:
 
     def _sync_rules(self, vm, sg_id, groups):
         """Allinea le regole del gruppo: cancella le estranee, crea le mancanti."""
+        # Confronto per contenuto (direzione, protocollo, porte, altro capo),
+        # non per ID: una regola uguale gia' presente non si tocca
         desired = {_rule_key(r): r for r in self._desired_rules(vm, groups)}
         existing = {_rule_key(r): r for r in
                     self.cloud.security_group_rules(sg_id)}

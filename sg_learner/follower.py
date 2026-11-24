@@ -10,6 +10,9 @@ file di log:
 
 Inode e offset sono salvati nel Flow Store: dopo un riavvio del servizio
 la lettura riprende da dove era arrivata, anche su un file ruotato.
+
+Collegamenti: lo usa CollectionWorker (service.py) ogni 2 secondi; le righe
+lette le interpreta il Flow Collector (collector.py).
 """
 
 import logging
@@ -125,6 +128,7 @@ class LogFollower:
     def _read_available(self):
         """Legge tutto cio' che e' stato aggiunto al file aperto."""
         size = os.fstat(self._file.fileno()).st_size
+        # File piu' corto di dove eravamo arrivati: e' stato svuotato
         if size < self._offset:
             LOG.info("%s e' stato troncato: lettura dall'inizio", self.path)
             self._file.seek(0)

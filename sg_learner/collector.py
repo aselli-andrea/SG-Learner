@@ -11,6 +11,11 @@ le connessioni, non i pacchetti:
 
 ConnectionDeduplicator scarta ritrasmissioni e risposte UDP: senza, ogni
 risposta DNS diventerebbe una regola inutile su una porta casuale.
+
+Collegamenti: le righe le legge LogFollower (follower.py); CollectionWorker
+(service.py) passa i Flow di inizio connessione al Flow Store (store.py).
+Se il limitatore del Packet Logging scarta il SYN, la connessione non viene
+contata: per questo DevStack alza rate_limit e burst_limit (devstack/settings).
 """
 
 import dataclasses
@@ -79,6 +84,8 @@ class Flow:
     def is_connection_start(self):
         """True se il pacchetto apre una nuova connessione."""
         if self.protocol == "tcp":
+            # SYN senza ACK = il primo pacchetto dell'handshake; il SYN+ACK
+            # e' la risposta del server e non apre niente
             return "syn" in self.tcp_flags and "ack" not in self.tcp_flags
         if self.protocol in _ICMP_ECHO_REQUEST:
             return self.icmp_type == _ICMP_ECHO_REQUEST[self.protocol]
@@ -213,6 +220,7 @@ class ConnectionDeduplicator:
     """
 
     def __init__(self, window=60):
+        """`window`: secondi in cui lo stesso flusso conta una volta sola."""
         self.window = datetime.timedelta(seconds=window)
         self._last_seen = {}
         # Datagrammi UDP recenti: (sorgente, destinazione) -> ultimo istante
@@ -232,6 +240,8 @@ class ConnectionDeduplicator:
         connection_key entro `window` secondi (ritrasmissioni).
         """
         if flow.protocol == "udp":
+            # Prima si controlla se e' una risposta, poi si registra il
+            # datagramma: cosi' la risposta della risposta non viene scartata
             reply = self._is_udp_reply(flow)
             self._udp_seen[_udp_endpoints(flow)] = flow.timestamp
             if reply:

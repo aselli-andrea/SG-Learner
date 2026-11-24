@@ -9,6 +9,10 @@
 
 approve e reject scrivono solo la decisione nel database: su Neutron
 agisce l'Enforcer (enforcer.py), al giro successivo del servizio.
+
+Collegamenti: i comandi arrivano dall'API (api.py); tick lo chiama il
+servizio (service.py) per le finestre scadute. Per la proposta usa il
+Policy Engine (engine.py) sulle osservazioni del Flow Store (store.py).
 """
 
 import dataclasses
@@ -67,6 +71,7 @@ class Lifecycle:
     """Gestisce le transizioni di stato delle VM."""
 
     def __init__(self, store, cloud, engine_options=None):
+        """`engine_options`: soglie del Policy Engine dalla sezione [engine]."""
         self.store = store
         self.cloud = cloud
         self.engine_options = engine_options or {}

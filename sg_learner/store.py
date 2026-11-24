@@ -12,6 +12,10 @@ Tabelle:
 Servizio e API usano lo stesso file (la CLI passa dall'API): save_vm evita
 che un processo sovrascriva le modifiche dell'altro (controllo su
 updated_at).
+
+Collegamenti: scrivono qui CollectionWorker (osservazioni), Lifecycle ed
+Enforcer (VM), Anomaly Detector (anomalie); l'API legge e scrive le stesse
+tabelle. Nessun altro modulo usa SQLite direttamente.
 """
 
 import contextlib
@@ -86,6 +90,8 @@ CREATE TABLE IF NOT EXISTS alerts (
 
 # Una connessione nuova crea la riga con count=1; se la riga esiste gia'
 # (stessa chiave primaria) si incrementa count e si aggiornano gli orari
+# Una connessione nuova: se la riga (stessa chiave) esiste gia', si aumenta
+# il contatore e si allargano prima/ultima volta, altrimenti si crea
 _UPSERT = """
 INSERT INTO observations (vm_mac, direction, protocol, service_port,
                           icmp_type, remote_ip, verdict, vm_ip, count,
@@ -184,10 +190,12 @@ def _ts_from_db(value):
 
 
 def _opt_ts_to_db(value):
+    """Come _ts_to_db, ma None resta None (data facoltativa)."""
     return _ts_to_db(value) if value else None
 
 
 def _opt_ts_from_db(value):
+    """Come _ts_from_db, ma None resta None."""
     return _ts_from_db(value) if value else None
 
 
@@ -219,9 +227,11 @@ class FlowStore:
                              " TEXT NOT NULL DEFAULT '[]'")
 
     def close(self):
+        """Chiude il database."""
         self._db.close()
 
     def __enter__(self):
+        """Uso con `with FlowStore(...) as store:` (si chiude da solo)."""
         return self
 
     def __exit__(self, *_exc):
@@ -322,6 +332,7 @@ class FlowStore:
 
     @staticmethod
     def _row_to_observation(row):
+        """Riga della tabella observations -> Observation."""
         return Observation(
             vm_mac=row["vm_mac"],
             vm_ip=row["vm_ip"],
@@ -405,6 +416,7 @@ class FlowStore:
 
     @staticmethod
     def _row_to_vm(row):
+        """Riga della tabella vms -> VmRecord (liste e proposta da JSON)."""
         return VmRecord(
             server_id=row["server_id"], name=row["name"],
             project_id=row["project_id"], port_id=row["port_id"],
@@ -498,6 +510,7 @@ class FlowStore:
 
     @staticmethod
     def _row_to_alert(row):
+        """Riga della tabella alerts -> Alert."""
         return Alert(
             id=row["id"], server_id=row["server_id"], kind=row["kind"],
             direction=row["direction"], protocol=row["protocol"],

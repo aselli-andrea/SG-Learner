@@ -11,6 +11,11 @@ successivi all'applicazione (enforced_at):
 SG-Learner non allarga mai le regole da solo: solo l'amministratore
 trasforma un'anomalia in regola (accept), e una scan non si accetta mai.
 Un'anomalia chiusa si riapre solo in un nuovo periodo di applicazione.
+
+Collegamenti: legge i DROP dal Flow Store (store.py), raccolti dal log DROP
+che l'Enforcer attiva sul gruppo appreso. tick lo chiama il servizio ogni
+30 secondi; dismiss e accept arrivano dall'API. accept usa il Policy Engine
+(engine.py) e riporta la VM in APPROVED: la regola la applica l'Enforcer.
 """
 
 import collections
@@ -60,6 +65,8 @@ class AnomalyDetector:
     def __init__(self, store, cloud=None,
                  candidate_threshold=DEFAULT_CANDIDATE_THRESHOLD,
                  scan_ports=DEFAULT_SCAN_PORTS, engine_options=None):
+        """`cloud` serve solo ad accept (regole verso altre VM); le soglie
+        vengono dalla sezione [detector] della configurazione."""
         self.store = store
         self.cloud = cloud
         # Le stesse opzioni del Policy Engine usate per la proposta
@@ -168,6 +175,7 @@ class AnomalyDetector:
             raise lifecycle.LifecycleError(
                 "La VM dell'anomalia non e' piu' in stato 'enforcing'")
 
+        # I DROP che corrispondono esattamente all'anomalia (stessi campi)
         drops = [o for o in self.store.observations(vm_mac=vm.mac,
                                                     verdict="drop")
                  if (o.direction, o.protocol, o.service_port, o.icmp_type,

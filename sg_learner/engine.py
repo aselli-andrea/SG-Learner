@@ -10,6 +10,11 @@ Non chiama OpenStack: quale IP appartiene a quale VM gli viene passato
 4. altro capo: remote_group per le VM del cloud, 0.0.0.0/0 con almeno
    `public_threshold` IP esterni, altrimenti un /32 per IP;
 5. sotto `low_confidence_below` connessioni la regola e' "poco osservata".
+
+Collegamenti: le osservazioni arrivano dal Flow Store (store.py). Lo
+chiamano Lifecycle._propose (la proposta di una VM) e AnomalyDetector.accept
+(la regola da un'anomalia accettata); le regole prodotte le applica
+l'Enforcer (enforcer.py) con to_neutron.
 """
 
 import collections
@@ -184,6 +189,8 @@ def build_proposal(observations, vm_mac, ip_to_group=None,
         elif obs.verdict != "allow":
             blocked.append(obs)
         else:
+            # Anche IPv4/IPv6 fa parte della chiave: in Neutron una regola
+            # vale per un solo ethertype
             key = (obs.direction, obs.protocol, obs.service_port,
                    obs.icmp_type, _ethertype(obs.remote_ip))
             groups[key].append(obs)
@@ -196,6 +203,7 @@ def build_proposal(observations, vm_mac, ip_to_group=None,
             ip_to_group, public_threshold, min_connections,
             low_confidence_below))
 
+    # Ordine stabile per la stampa: prima ingress, poi protocollo e porta
     rules.sort(key=lambda r: (r.direction != INGRESS, r.protocol,
                               r.port if r.port is not None else -1,
                               r.remote_group or "", r.remote_ip_prefix or ""))
@@ -216,6 +224,8 @@ def _rules_for_group(direction, protocol, port, icmp_type, ethertype,
                      min_connections, low_confidence_below):
     """Punto 4: le regole per un gruppo (direzione, protocollo, porta)."""
     def make(prefix, group, members):
+        """Una regola dalle osservazioni `members`, verso un prefisso IP
+        o verso un gruppo (uno dei due e' None)."""
         count = sum(o.count for o in members)
         return ProposedRule(
             direction=direction, protocol=protocol, port=port,
@@ -239,6 +249,8 @@ def _rules_for_group(direction, protocol, port, icmp_type, ethertype,
     rules = [make(None, group, members)
              for group, members in by_group.items()]
 
+    # Molti IP esterni diversi = servizio pubblico: una regola aperta a
+    # tutti; pochi = un /32 per ciascuno (es. l'host che entra in SSH)
     external_ips = {o.remote_ip for o in external}
     if len(external_ips) >= public_threshold:
         any_prefix = "::/0" if ethertype == "IPv6" else "0.0.0.0/0"
@@ -248,4 +260,5 @@ def _rules_for_group(direction, protocol, port, icmp_type, ethertype,
             members = [o for o in external if o.remote_ip == ip]
             rules.append(make(_host_prefix(ip), None, members))
 
+    # Le regole con troppo poco traffico non vengono proposte
     return [r for r in rules if r.connections >= min_connections]

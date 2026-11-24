@@ -4,6 +4,10 @@ All'avvio legge la configurazione e controlla OpenStack e il log di OVN.
 Poi gira in un ciclo: ogni 2 secondi legge il log e salva le connessioni;
 ogni 30 secondi genera le proposte scadute, applica e riconcilia
 (Enforcer) e analizza il traffico bloccato (Anomaly Detector).
+
+Collegamenti: e' l'unico processo che legge il log di OVN e agisce da solo
+su Neutron. Con l'API (api.py) condivide solo il database (store.py): le
+decisioni prese con la CLI le trova li' al giro successivo.
 """
 
 import argparse
@@ -169,6 +173,8 @@ def main(argv=None):
     stopping = False
 
     def _stop(signum, _frame):
+        """SIGTERM/SIGINT (systemctl stop, Ctrl+C): il ciclo finisce il giro
+        in corso e il servizio si chiude in modo pulito."""
         nonlocal stopping
         LOG.info("Ricevuto segnale %s, arresto in corso", signum)
         stopping = True

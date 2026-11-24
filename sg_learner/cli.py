@@ -41,12 +41,15 @@ class ApiClient:
     """
 
     def __init__(self, conn, url=None):
+        """`conn`: connessione openstacksdk da openrc; `url`: --api-url."""
         self.session = conn.session
         self.region = getattr(conn.config, "region_name", None)
         self.url = url
 
     def request(self, method, path, body=None):
         """Restituisce (codice HTTP, JSON della risposta)."""
+        # Con --api-url si usa quell'indirizzo, altrimenti la sessione lo
+        # cerca nel catalogo di Keystone (servizio "sg-learner", pubblico)
         options = {"endpoint_override": self.url} if self.url else {
             "endpoint_filter": {"service_type": SERVICE_TYPE,
                                 "interface": "public",
@@ -81,6 +84,7 @@ def call(client, method, path, body=None):
 
 
 def _vm_path(name, suffix=""):
+    """Percorso API di una VM, con il nome codificato per l'URL."""
     return f"/vms/{urllib.parse.quote(name, safe='')}{suffix}"
 
 

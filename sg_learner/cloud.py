@@ -4,6 +4,9 @@ Un solo confine verso OpenStack: il resto del codice non dipende dalle API,
 e nei test questa classe si sostituisce con una finta (FakeCloud,
 FakeNeutron). Il Packet Logging non e' coperto da openstacksdk: per
 /log/logs si usa l'API REST con la sessione autenticata della libreria.
+
+Collegamenti: lo usano Lifecycle (find_vm, enable_logging), Enforcer
+(gruppi, regole, porte, log DROP) e Anomaly Detector (vm_groups_by_ip).
 """
 
 import dataclasses
@@ -43,6 +46,7 @@ class Cloud:
     """Operazioni su OpenStack usate da SG-Learner."""
 
     def __init__(self, conn):
+        """`conn`: connessione openstacksdk con l'utente di servizio."""
         self.conn = conn
 
     # --- Nova e porte ----------------------------------------------------------
