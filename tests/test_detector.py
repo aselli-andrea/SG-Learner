@@ -200,17 +200,17 @@ def test_dismissed_alert_reopens_after_a_new_enforcement(store, vm, det):
     assert again.count == 1
 
 
-def test_cli_alerts(store, vm, det, tmp_path, monkeypatch):
+def test_cli_alerts(store, vm, det, tmp_path):
+    from sg_learner import api
+    from tests.test_lifecycle import FlaskApiClient
+
     store.record_many([drop(i, "10.0.0.5", 873) for i in range(6)])
     det.tick()
-    conf = tmp_path / "sg-learner.conf"
-    conf.write_text(f"[DEFAULT]\ndata_dir = {tmp_path}\n")
-    monkeypatch.setattr(cli, "Cloud", lambda conn: None)
+    client = FlaskApiClient(api.create_app(str(tmp_path), lambda: None))
 
     def run(*args):
         out = io.StringIO()
-        code = cli.main(["--config-file", str(conf), *args],
-                        conn=object(), out=out)
+        code = cli.main(list(args), client=client, out=out)
         return code, out.getvalue()
 
     code, out = run("alerts", "list")

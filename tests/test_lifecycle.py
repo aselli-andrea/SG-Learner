@@ -7,7 +7,8 @@ attivato, senza OpenStack.
 Cosa verificano:
 - parse_duration e le transizioni learn, generate, approve, reject;
 - la proposta generata solo a fine finestra (tick);
-- i comandi della CLI, gli errori e il messaggio senza openrc;
+- i comandi della CLI, client dell'API REST: risultati, errori (anche
+  ruolo mancante e API spenta) e messaggio senza openrc;
 - il servizio che aspetta OpenStack all'avvio (connect_with_retry).
 """
 
@@ -179,19 +180,40 @@ def test_learn_unknown_vm(manager):
         manager.learn("non-esiste")
 
 
-# --- CLI ---------------------------------------------------------------------
+# --- CLI: client dell'API REST ----------------------------------------------
+
+ADMIN = {"X-Identity-Status": "Confirmed", "X-Roles": "reader,member,admin"}
+
+
+class FlaskApiClient:
+    """Sostituisce cli.ApiClient: manda le richieste all'API di prova di
+    Flask, con gli header che keystonemiddleware mette dopo aver verificato
+    il token."""
+
+    def __init__(self, app, headers=ADMIN):
+        self.client = app.test_client()
+        self.headers = headers
+
+    def request(self, method, path, body=None):
+        response = self.client.open("/v1" + path, method=method, json=body,
+                                    headers=self.headers)
+        return response.status_code, response.get_json() or {}
+
 
 @pytest.fixture
-def run_cli(tmp_path, cloud, monkeypatch):
-    """Esegue il CLI con un database temporaneo e il cloud finto."""
-    conf = tmp_path / "sg-learner.conf"
-    conf.write_text(f"[DEFAULT]\ndata_dir = {tmp_path}\n")
-    monkeypatch.setattr(cli, "Cloud", lambda conn: cloud)
+def app(tmp_path, cloud):
+    from sg_learner import api
+    return api.create_app(str(tmp_path), lambda: cloud)
 
-    def run(*args):
+
+@pytest.fixture
+def run_cli(app):
+    """Esegue la CLI contro l'API di prova (database temporaneo, cloud
+    finto)."""
+    def run(*args, client=None):
         out = io.StringIO()
-        code = cli.main(["--config-file", str(conf), *args],
-                        conn=object(), out=out)
+        code = cli.main(list(args), client=client or FlaskApiClient(app),
+                        out=out)
         return code, out.getvalue()
     return run
 
@@ -199,6 +221,7 @@ def run_cli(tmp_path, cloud, monkeypatch):
 def test_cli_full_flow(run_cli, tmp_path):
     code, out = run_cli("learn", "vm-web", "--duration", "30m")
     assert code == 0 and "Osservazione di vm-web (10.0.0.10) avviata" in out
+    assert "Logging attivo su 1 security group" in out
 
     with FlowStore(tmp_path / "sg-learner.db") as s:
         s.record(flow(1, "172.24.4.1", 22))
@@ -232,26 +255,45 @@ def test_cli_reject(run_cli, tmp_path):
     assert code == 1
 
 
-def test_cli_reports_errors(run_cli, capsys):
-    code, _ = run_cli("proposal", "approve", "vm-web")
+def test_cli_reports_errors(run_cli, app, capsys):
+    """Gli errori dell'API diventano "Errore: ..." e codice 1: stato
+    sbagliato (409), ruolo mancante (403), API spenta."""
+    from keystoneauth1 import exceptions as ks_exceptions
 
+    code, _ = run_cli("proposal", "approve", "vm-web")
     assert code == 1
     assert "non e' seguita" in capsys.readouterr().err
 
+    member = {"X-Identity-Status": "Confirmed", "X-Roles": "member"}
+    code, _ = run_cli("status", client=FlaskApiClient(app, member))
+    assert code == 1
+    assert "serve il ruolo admin" in capsys.readouterr().err
 
-def test_cli_without_openrc_explains_what_to_do(tmp_path, monkeypatch, capsys):
+    class ApiDown:
+        session = None
+
+        def request(self, *args, **kwargs):
+            raise ks_exceptions.ConnectFailure("connessione rifiutata")
+
+    class Conn:
+        session = ApiDown()
+        config = None
+
+    code, _ = run_cli("status", client=cli.ApiClient(Conn()))
+    assert code == 1
+    assert "devstack@sg-learner-api" in capsys.readouterr().err
+
+
+def test_cli_without_openrc_explains_what_to_do(monkeypatch, capsys):
     """Senza `source openrc` la CLI deve stampare un messaggio comprensibile,
     non un traceback di keystoneauth."""
     from keystoneauth1.exceptions.auth_plugins import MissingRequiredOptions
-    from sg_learner import cli
 
     def no_credentials():
         raise MissingRequiredOptions([])
     monkeypatch.setattr(cli.openstack, "connect", no_credentials)
-    conf = tmp_path / "sg-learner.conf"
-    conf.write_text(f"[DEFAULT]\ndata_dir = {tmp_path}\n")
 
-    assert cli.main(["--config-file", str(conf), "status"]) == 1
+    assert cli.main(["status"]) == 1
     assert "source /opt/stack/devstack/openrc" in capsys.readouterr().err
 
 

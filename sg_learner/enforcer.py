@@ -77,7 +77,7 @@ class Enforcer:
 
         first_time = vm.state != lifecycle.ENFORCING
         if not (first_time or changed):
-            # Nessuna novita': non si salva (niente conflitti con la CLI)
+            # Nessuna novita': non si salva (niente conflitti con l'API)
             return vm
         if first_time:
             # Da qui in avanti i DROP sono di competenza dell'Anomaly Detector

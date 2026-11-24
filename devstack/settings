@@ -4,7 +4,8 @@
 # sovrascritta nel local.conf.
 
 # Abilita il servizio e l'API REST quando il plugin e' attivato con
-# enable_plugin (l'API si puo' escludere con disable_service sg-learner-api)
+# enable_plugin. La CLI sg-learner e' un client dell'API: senza
+# sg-learner-api resta attivo solo il servizio.
 enable_service sg-learner sg-learner-api
 
 # Percorsi

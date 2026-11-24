@@ -171,7 +171,7 @@ class Lifecycle:
                 try:
                     proposed.append(self._propose(vm, now))
                 except ConflictError:
-                    pass        # cambiata dalla CLI: si riprova al giro dopo
+                    pass        # cambiata dall'API: si riprova al giro dopo
         return proposed
 
     def status(self):

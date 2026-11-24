@@ -9,8 +9,9 @@ Tabelle:
 - alerts: le anomalie dell'Anomaly Detector;
 - state: chiave/valore, per esempio la posizione nel log di OVN.
 
-Servizio, CLI e API usano lo stesso file: save_vm evita che un processo
-sovrascriva le modifiche di un altro (controllo su updated_at).
+Servizio e API usano lo stesso file (la CLI passa dall'API): save_vm evita
+che un processo sovrascriva le modifiche dell'altro (controllo su
+updated_at).
 """
 
 import contextlib

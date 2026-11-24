@@ -6,30 +6,87 @@
     sg-learner rollback <vm>                rimette i gruppi originali
     sg-learner alerts list [vm] | accept <id> | dismiss <id>
 
-Usa le credenziali OS_* di openrc per OpenStack e scrive le decisioni nel
-database del servizio, che le esegue al giro successivo. Le stesse
-operazioni sono disponibili via HTTP con l'API REST (api.py).
+La CLI e' un client dell'API REST (api.py), come il comando `openstack`
+lo e' per Nova e Neutron: con le credenziali OS_* di openrc chiede un token
+a Keystone, trova l'indirizzo dell'API nel catalogo (servizio sg-learner)
+e chiama gli endpoint. Non apre il database e non chiama Neutron.
 """
 
 import argparse
-import configparser
 import datetime
 import os
 import sys
+import urllib.parse
 
 import openstack
-from keystoneauth1 import exceptions as auth_exceptions
+from keystoneauth1 import exceptions as ks_exceptions
 from openstack import exceptions as sdk_exceptions
 
-from sg_learner import detector, engine, lifecycle
-from sg_learner.cloud import Cloud
-from sg_learner.enforcer import Enforcer
-from sg_learner.store import ConflictError, FlowStore
+# Tipo del servizio nel catalogo di Keystone (devstack/plugin.sh)
+SERVICE_TYPE = "sg-learner"
 
-# File di configurazione scritto dal plugin DevStack (devstack/plugin.sh)
-DEFAULT_CONFIG = "/etc/sg-learner/sg-learner.conf"
-DEFAULT_DATA_DIR = "/opt/stack/data/sg-learner"
-DB_FILE = "sg-learner.db"
+OPENRC_HINT = ("credenziali di OpenStack mancanti. Eseguire prima:"
+               " source /opt/stack/devstack/openrc admin admin")
+
+
+class CliError(Exception):
+    """Errore da mostrare all'amministratore come "Errore: ..."."""
+
+
+class ApiClient:
+    """Chiamate all'API REST con la sessione autenticata di openstacksdk.
+
+    La sessione aggiunge da sola il token (X-Auth-Token) e trova l'URL
+    dell'API nel catalogo di Keystone; `url` lo sostituisce se indicato.
+    """
+
+    def __init__(self, conn, url=None):
+        self.session = conn.session
+        self.region = getattr(conn.config, "region_name", None)
+        self.url = url
+
+    def request(self, method, path, body=None):
+        """Restituisce (codice HTTP, JSON della risposta)."""
+        options = {"endpoint_override": self.url} if self.url else {
+            "endpoint_filter": {"service_type": SERVICE_TYPE,
+                                "interface": "public",
+                                "region_name": self.region}}
+        try:
+            response = self.session.request(path, method, json=body,
+                                            raise_exc=False, **options)
+        except ks_exceptions.auth_plugins.MissingRequiredOptions:
+            raise CliError(OPENRC_HINT)
+        except ks_exceptions.EndpointNotFound:
+            raise CliError("API di SG-Learner non trovata nel catalogo di"
+                           " Keystone (servizio sg-learner)")
+        except ks_exceptions.ConnectFailure:
+            raise CliError("API di SG-Learner non raggiungibile: controllare"
+                           " 'systemctl status devstack@sg-learner-api'")
+        except ks_exceptions.ClientException as error:
+            raise CliError(f"richiesta all'API fallita: {error}")
+        try:
+            data = response.json()
+        except ValueError:
+            data = {}
+        return response.status_code, data
+
+
+def call(client, method, path, body=None):
+    """Una chiamata all'API: il JSON se va bene, altrimenti CliError con il
+    messaggio dell'API (404, 409, 400, 401, 403)."""
+    code, data = client.request(method, path, body)
+    if code >= 400:
+        raise CliError(data.get("error") or f"risposta HTTP {code}")
+    return data
+
+
+def _vm_path(name, suffix=""):
+    return f"/vms/{urllib.parse.quote(name, safe='')}{suffix}"
+
+
+def _parse(ts):
+    """Testo ISO 8601 dell'API -> datetime (None resta None)."""
+    return datetime.datetime.fromisoformat(ts) if ts else None
 
 
 def _local(ts):
@@ -46,27 +103,28 @@ def print_status(vms, out=sys.stdout):
     print(f"{'VM':16} {'IP':15} {'STATO':10} {'FINE OSSERVAZIONE':18}"
           " REGOLE", file=out)
     for vm in vms:
-        until = _local(vm.learn_until)
+        learn_until = _parse(vm["learn_until"])
+        until = _local(learn_until)
         # Durante l'osservazione si mostrano anche i minuti che mancano
-        if vm.state == lifecycle.LEARNING and vm.learn_until:
-            minutes = max(0, int((vm.learn_until - now).total_seconds() // 60))
+        if vm["state"] == "learning" and learn_until:
+            minutes = max(0, int((learn_until - now).total_seconds() // 60))
             until += f" ({minutes} min)"
-        rules = len(vm.proposal["rules"]) if vm.proposal else "-"
-        print(f"{vm.name:16} {vm.ip:15} {vm.state:10} {until:18} {rules}",
-              file=out)
+        rules = vm["rules"] if vm["rules"] is not None else "-"
+        print(f"{vm['name']:16} {vm['ip'] or '-':15} {vm['state']:10}"
+              f" {until:18} {rules}", file=out)
 
 
-def print_alerts(alerts, names, out=sys.stdout):
-    """Tabella di `sg-learner alerts list`; names traduce ID VM -> nome."""
+def print_alerts(alerts, out=sys.stdout):
+    """Tabella di `sg-learner alerts list`."""
     if not alerts:
         print("Nessuna anomalia aperta.", file=out)
         return
     print(f"{'ID':>4} {'VM':14} {'TIPO':10} {'TENTATIVI':>9} {'ULTIMO':12}"
           " DESCRIZIONE", file=out)
     for a in alerts:
-        print(f"{a.id:>4} {names.get(a.server_id, a.server_id)[:14]:14}"
-              f" {a.kind:10} {a.count:>9} {_local(a.last_seen):12}"
-              f" {detector.describe(a)}", file=out)
+        print(f"{a['id']:>4} {a['vm'][:14]:14} {a['kind']:10}"
+              f" {a['count']:>9} {_local(_parse(a['last_seen'])):12}"
+              f" {a['description']}", file=out)
 
 
 def build_parser():
@@ -74,7 +132,10 @@ def build_parser():
     parser = argparse.ArgumentParser(
         prog="sg-learner",
         description="SG-Learner: security group appresi dal traffico reale")
-    parser.add_argument("--config-file", default=DEFAULT_CONFIG)
+    parser.add_argument(
+        "--api-url", default=os.environ.get("SG_LEARNER_API_URL"),
+        help="URL dell'API (es. http://host:9797/v1); di default lo prende"
+             " dal catalogo di Keystone")
     # Un sottocomando per ogni operazione: learn, status, rollback,
     # alerts (list/accept/dismiss) e proposal (generate/show/approve/reject)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -112,109 +173,91 @@ def build_parser():
     return parser
 
 
-def main(argv=None, conn=None, out=sys.stdout):
+def run(args, client, out):
+    """Esegue il comando chiamando l'API e stampa il risultato."""
+    if args.command == "learn":
+        body = {"duration": args.duration} if args.duration else None
+        vm = call(client, "POST", _vm_path(args.vm, "/learn"), body)
+        print(f"Osservazione di {vm['name']} ({vm['ip']}) avviata fino alle"
+              f" {_local(_parse(vm['learn_until']))}. Logging attivo su"
+              f" {vm['network_logs']} security group.", file=out)
+
+    elif args.command == "status":
+        print_status(call(client, "GET", "/vms")["vms"], out)
+
+    elif args.command == "rollback":
+        vm = call(client, "POST", _vm_path(args.vm, "/rollback"))
+        print(f"{vm['name']}: ripristinati i security group originali."
+              " La proposta resta disponibile (stato 'proposed').", file=out)
+
+    elif args.command == "alerts":
+        if args.action == "list":
+            query = {}
+            if args.vm:
+                query["vm"] = args.vm
+            if args.all:
+                query["all"] = "true"
+            path = "/alerts" + (f"?{urllib.parse.urlencode(query)}"
+                                if query else "")
+            print_alerts(call(client, "GET", path)["alerts"], out)
+        elif args.action == "accept":
+            data = call(client, "POST", f"/alerts/{args.id}/accept")
+            print(f"Anomalia {args.id} accettata: la nuova regola per"
+                  f" {data['vm']['name']} verra' applicata entro 30"
+                  " secondi.", file=out)
+        else:
+            call(client, "POST", f"/alerts/{args.id}/dismiss")
+            print(f"Anomalia {args.id} ignorata.", file=out)
+
+    # Da qui in poi il comando e' "proposal"
+    elif args.action == "generate":
+        vm = call(client, "POST", _vm_path(args.vm, "/proposal/generate"))
+        print(vm["proposal"]["summary"], file=out)
+
+    elif args.action == "show":
+        vm = call(client, "GET", _vm_path(args.vm))
+        if not vm.get("proposal"):
+            print(f"{vm['name']}: nessuna proposta (stato '{vm['state']}')",
+                  file=out)
+        else:
+            print(vm["proposal"]["summary"], file=out)
+            print(f"\nStato: {vm['state']}", file=out)
+
+    elif args.action == "approve":
+        vm = call(client, "POST", _vm_path(args.vm, "/proposal/approve"))
+        print(f"Proposta per {vm['name']} approvata: il servizio la"
+              " applichera' entro 30 secondi.", file=out)
+
+    elif args.action == "reject":
+        vm = call(client, "POST", _vm_path(args.vm, "/proposal/reject"))
+        print(f"Proposta per {vm['name']} rifiutata: la VM resta con i"
+              " security group originali. Per una nuova proposta:"
+              f" sg-learner learn {vm['name']}", file=out)
+
+
+def main(argv=None, client=None, out=sys.stdout):
     """Punto di ingresso del comando. Restituisce 0 se va tutto bene.
 
-    conn e out servono ai test: una connessione finta a OpenStack e un
-    output da controllare al posto dello schermo.
+    client e out servono ai test: un client che parla con l'API di prova
+    di Flask e un output da controllare al posto dello schermo.
     """
     args = build_parser().parse_args(argv)
-
-    # Configurazione: cartella dei dati, durata predefinita
-    # dell'osservazione e soglie del Policy Engine e del Detector
-    conf = configparser.ConfigParser()
-    conf.read(args.config_file)
-    data_dir = conf.get("DEFAULT", "data_dir", fallback=DEFAULT_DATA_DIR)
-    default_duration = conf.get("DEFAULT", "learn_duration",
-                                fallback=str(lifecycle.DEFAULT_LEARN_DURATION))
-
-    # Stesso database del servizio: la CLI scrive le decisioni
-    # dell'amministratore, il servizio le applica al giro successivo
-    store = FlowStore(os.path.join(data_dir, DB_FILE))
     try:
-        if conn is None:
+        if client is None:
             # Credenziali dalle variabili OS_* di openrc: senza openrc si
             # da' un messaggio chiaro invece di un traceback
             try:
                 conn = openstack.connect()
-            except (auth_exceptions.auth_plugins.MissingRequiredOptions,
+            except (ks_exceptions.auth_plugins.MissingRequiredOptions,
                     sdk_exceptions.ConfigException):
-                print("Errore: credenziali di OpenStack mancanti. Eseguire"
-                      " prima: source /opt/stack/devstack/openrc admin admin",
-                      file=sys.stderr)
-                return 1
-        cloud = Cloud(conn)
-        manager = lifecycle.Lifecycle(store, cloud,
-                                      engine.options_from_config(conf))
-
-        if args.command == "learn":
-            duration = lifecycle.parse_duration(
-                args.duration or default_duration)
-            vm = manager.learn(args.vm, duration)
-            print(f"Osservazione di {vm.name} ({vm.ip}) avviata fino alle"
-                  f" {_local(vm.learn_until)}. Logging attivo su"
-                  f" {len(vm.log_ids)} security group.", file=out)
-
-        elif args.command == "status":
-            print_status(manager.status(), out)
-
-        elif args.command == "rollback":
-            vm = Enforcer(store, cloud).rollback(args.vm)
-            print(f"{vm.name}: ripristinati i security group originali."
-                  " La proposta resta disponibile (stato 'proposed').",
-                  file=out)
-
-        elif args.command == "alerts":
-            anomalies = detector.AnomalyDetector(
-                store, cloud, **detector.options_from_config(conf))
-            if args.action == "list":
-                server_id = manager.get(args.vm).server_id if args.vm else None
-                names = {vm.server_id: vm.name for vm in manager.status()}
-                print_alerts(store.list_alerts(
-                    server_id, status=None if args.all else "open"),
-                    names, out)
-            elif args.action == "accept":
-                vm = anomalies.accept(args.id)
-                print(f"Anomalia {args.id} accettata: la nuova regola per"
-                      f" {vm.name} verra' applicata entro 30 secondi.",
-                      file=out)
-            else:
-                anomalies.dismiss(args.id)
-                print(f"Anomalia {args.id} ignorata.", file=out)
-
-        # Da qui in poi il comando e' "proposal"
-        elif args.action == "generate":
-            vm = manager.generate(args.vm)
-            print(vm.proposal["summary"], file=out)
-
-        elif args.action == "show":
-            vm = manager.get(args.vm)
-            if not vm.proposal:
-                print(f"{vm.name}: nessuna proposta (stato '{vm.state}')",
-                      file=out)
-            else:
-                print(vm.proposal["summary"], file=out)
-                print(f"\nStato: {vm.state}", file=out)
-
-        elif args.action == "approve":
-            vm = manager.approve(args.vm)
-            print(f"Proposta per {vm.name} approvata: il servizio la"
-                  " applichera' entro 30 secondi.", file=out)
-
-        elif args.action == "reject":
-            vm = manager.reject(args.vm)
-            print(f"Proposta per {vm.name} rifiutata: la VM resta con i"
-                  " security group originali. Per una nuova proposta:"
-                  f" sg-learner learn {vm.name}", file=out)
-
+                raise CliError(OPENRC_HINT)
+            client = ApiClient(conn, args.api_url)
+        run(args, client, out)
     # Errori previsti (VM non trovata, stato sbagliato, durata non valida,
-    # modifica concorrente del servizio): messaggio breve e codice 1
-    except (lifecycle.LifecycleError, ConflictError, LookupError,
-            ValueError) as error:
+    # token o ruolo mancante, API non raggiungibile): messaggio e codice 1
+    except CliError as error:
         print(f"Errore: {error}", file=sys.stderr)
         return 1
-    finally:
-        store.close()
     return 0
 
 

@@ -1,6 +1,8 @@
 """API REST di SG-Learner (Flask), protetta da Keystone.
 
-Stesse operazioni della CLI, con le stesse classi e lo stesso database.
+Unico punto d'accesso dell'amministratore: la CLI (cli.py) e ogni altro
+client chiamano questi endpoint. Usa le stesse classi e lo stesso database
+del servizio.
 keystonemiddleware verifica il token (401 se manca o non e' valido) e passa
 l'identita' negli header X-Identity-Status e X-Roles, togliendo quelli
 inviati dal client. L'applicazione accetta solo il ruolo admin (403).
@@ -63,6 +65,7 @@ def _vm_json(vm, with_proposal=False):
         "learn_until": _ts(vm.learn_until),
         "rules": len(vm.proposal["rules"]) if vm.proposal else None,
         "learned_security_group": vm.learned_sg_id,
+        "network_logs": len(vm.log_ids),
     }
     if with_proposal:
         data["proposal"] = vm.proposal
@@ -191,7 +194,7 @@ def create_app(data_dir, cloud_factory, engine_options=None,
     @app.post("/v1/vms/<name>/proposal/approve")
     def approve(name):
         """POST .../proposal/approve: approva (202, applica l'Enforcer)."""
-        # Come per la CLI: l'Enforcer applica la proposta entro 30 secondi
+        # L'Enforcer del servizio applica la proposta entro 30 secondi
         return _vm_json(manager().approve(name)), 202
 
     @app.post("/v1/vms/<name>/proposal/reject")
