@@ -216,11 +216,11 @@ deve mostrare l'autenticazione su Keystone, `Logging API attiva` e
 `Log OVN leggibile`; `sudo journalctl -u devstack@sg-learner-api -n 5
 --no-pager` deve mostrare `API di SG-Learner ... in ascolto su 0.0.0.0:9797`.
 
-L'installazione è stata verificata da zero il 06/11/2026: `./unstack.sh`,
-poi `./stack.sh` con il plugin scaricato da GitHub e la sola riga
-`enable_plugin` nel `local.conf`, senza altri passaggi a mano. Il 20/11/2026
-una seconda installazione da zero ha verificato anche l'API REST: il plugin
-la configura, la registra nel catalogo di Keystone e la avvia da solo.
+L'installazione è stata verificata da zero: `./unstack.sh`, poi
+`./stack.sh` con il plugin scaricato da GitHub e la sola riga
+`enable_plugin` nel `local.conf`, senza altri passaggi a mano. Anche l'API
+REST è configurata, registrata nel catalogo di Keystone e avviata dal
+plugin.
 
 Dopo un riavvio della macchina DevStack conviene lanciare, come utente
 `stack`, [`tools/post-boot.sh`](tools/post-boot.sh): aspetta la
@@ -346,7 +346,7 @@ sezioni al file (poi `sudo systemctl restart devstack@sg-learner`):
 
 ```ini
 [engine]
-# IP esterni distinti oltre i quali la regola usa 0.0.0.0/0
+# con almeno questi IP esterni distinti la regola usa 0.0.0.0/0
 public_threshold = 5
 # connessioni minime perché un flusso diventi una regola
 min_connections = 1
@@ -354,9 +354,9 @@ min_connections = 1
 low_confidence_below = 3
 
 [detector]
-# tentativi bloccati oltre i quali un flusso è "candidate"
+# con almeno questi tentativi bloccati un flusso è "candidate"
 candidate_threshold = 5
-# porte diverse provate da uno stesso IP oltre le quali è una "scan"
+# un IP che prova almeno queste porte diverse è una "scan"
 scan_ports = 5
 ```
 
@@ -409,8 +409,8 @@ per le decisioni dell'amministratore (approvazione, rollback).
 
 ### 6.2 A mano, comando per comando
 
-Sono gli stessi passi dello script. Gli IP sono quelli della demo del 06/11:
-dopo il passo 1 vanno sostituiti con quelli di `openstack server list`. Per
+Sono gli stessi passi dello script. Gli IP sono quelli di una demo di
+esempio: dopo il passo 1 vanno sostituiti con quelli di `openstack server list`. Per
 entrare nelle VM CirrOS la password è `gocubsgo`: `ssh` la chiede a ogni
 comando, a meno di usare `sshpass -p gocubsgo ssh ...` come fa lo script.
 
@@ -511,7 +511,7 @@ sg-learner proposal approve vm-app             # riapplica il gruppo appreso
 
 Per cancellare tutto: `tools/demo.sh clean`.
 
-**Risultato** (verificato dal vivo il 28/10, il 05/11 e il 06/11/2026, quest'ultimo su un'installazione da zero)
+**Risultato** (verificato dal vivo, anche su un'installazione da zero)
 
 | Flusso | Con `demo-open` | Con i gruppi appresi | Regola che lo decide |
 |---|---|---|---|
@@ -522,7 +522,7 @@ Per cancellare tutto: `tools/demo.sh clean`.
 | esterno → vm-web:80 | passa | **passa** | `0.0.0.0/0`: 5 IP esterni distinti osservati |
 | vm-app → vm-db:5432 | passa | **bloccato** | nessuna: vm-app non ha mai parlato con il database |
 | esterno → vm-db:5432 | passa | **bloccato** | nessuna |
-| SSH dell'host su vm-db | passa | **dipende** | permesso solo se osservato durante il learning (lo script ci entra, la demo del 28/10 no) |
+| SSH dell'host su vm-db | passa | **dipende** | permesso solo se osservato durante il learning (lo script entra in SSH nelle VM, quindi la regola c'è) |
 | ping a vm-web | passa | **bloccato** | nessuna |
 | vm-test (VM estranea, prova a parte) → vm-db:5432 e :53 | passa | **bloccato** | vm-test non fa parte del gruppo `learned-vm-web` |
 | vm-test (prova a parte) → vm-web:80 | passa | **passa** | `0.0.0.0/0`: servizio pubblico |
@@ -571,7 +571,7 @@ Dopo l'applicazione:
   lo stesso componente dei servizi OpenStack: verifica il token con
   Keystone e toglie dalle richieste gli header di identità inviati dal
   client, così nessuno può fingersi amministratore. L'API accetta solo il
-  ruolo `admin`, come la CLI.
+  ruolo `admin`.
 - **Privilegi.** L'utente di servizio ha il ruolo `admin` (serve per vedere
   le VM di tutti i progetti); la configurazione con la password è leggibile
   solo da `stack` (permessi 640); il log di OVN è accessibile in sola
