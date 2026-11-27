@@ -46,7 +46,7 @@ ADMIN_ROLE = "admin"
 
 # Errori previsti -> codice HTTP (gli stessi che la CLI mostra come messaggio)
 _ERRORS = (
-    (lifecycle.NotFoundError, 404),     # VM o anomalia inesistente
+    (lifecycle.NotFoundError, 404),     # VM inesistente
     (lifecycle.LifecycleError, 409),    # operazione non valida nello stato
     (ConflictError, 409),               # modificata nel frattempo: riprovare
     (lifecycle.InvalidInputError, 400), # durata non valida
@@ -282,7 +282,7 @@ def main(argv=None):
         raise SystemExit("Sezione [keystone_authtoken] mancante: l'API non"
                          " parte senza autenticazione Keystone")
 
-    # Import qui, come nel servizio: i test di create_app non ne hanno bisogno
+    # Import qui: i test di create_app non ne hanno bisogno
     from sg_learner import cloud as cloud_module
     from sg_learner import service
 

@@ -240,8 +240,8 @@ class ConnectionDeduplicator:
         connection_key entro `window` secondi (ritrasmissioni).
         """
         if flow.protocol == "udp":
-            # Prima si controlla se e' una risposta, poi si registra il
-            # datagramma: cosi' la risposta della risposta non viene scartata
+            # Prima si controlla se e' la risposta a un datagramma visto da
+            # poco, poi lo si registra (anche se e' una risposta)
             reply = self._is_udp_reply(flow)
             self._udp_seen[_udp_endpoints(flow)] = flow.timestamp
             if reply:

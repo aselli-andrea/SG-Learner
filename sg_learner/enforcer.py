@@ -52,7 +52,7 @@ class Enforcer:
     """Applica e mantiene i security group appresi."""
 
     def __init__(self, store, cloud):
-        """`store`: il Flow Store; `cloud`: l'accesso a Neutron (cloud.py)."""
+        """`store`: il Flow Store; `cloud`: l'accesso a OpenStack (cloud.py)."""
         self.store = store
         self.cloud = cloud
 

@@ -172,8 +172,9 @@ def build_proposal(observations, vm_mac, ip_to_group=None,
                    low_confidence_below=DEFAULT_LOW_CONFIDENCE_BELOW):
     """Costruisce la proposta per la porta di VM con MAC `vm_mac`.
 
-    `ip_to_group`: dizionario {IP di un'altra VM: suo security group},
-    usato per trasformare il traffico tra VM in regole remote_group.
+    `ip_to_group`: dizionario {IP di un'altra VM: suo nome logico
+    "vm:<nome>"}, usato per trasformare il traffico tra VM in regole
+    remote_group (il gruppo vero lo trova poi l'Enforcer).
     """
     ip_to_group = ip_to_group or {}
     mine = [o for o in observations if o.vm_mac == vm_mac]

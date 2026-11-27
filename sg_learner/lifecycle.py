@@ -38,7 +38,7 @@ class LifecycleError(Exception):
 
 
 class NotFoundError(LookupError):
-    """VM o anomalia inesistente (l'API risponde 404)."""
+    """VM inesistente (l'API risponde 404)."""
 
 
 class InvalidInputError(ValueError):
@@ -209,5 +209,6 @@ class Lifecycle:
         return proposed
 
     def status(self):
-        """Tutte le VM seguite, per `sg-learner status`."""
+        """Tutte le VM seguite. Non usato: GET /v1/vms legge direttamente
+        il Flow Store."""
         return self.store.list_vms()

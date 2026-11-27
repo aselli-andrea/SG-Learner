@@ -89,9 +89,8 @@ CREATE TABLE IF NOT EXISTS alerts (
 """
 
 # Una connessione nuova crea la riga con count=1; se la riga esiste gia'
-# (stessa chiave primaria) si incrementa count e si aggiornano gli orari
-# Una connessione nuova: se la riga (stessa chiave) esiste gia', si aumenta
-# il contatore e si allargano prima/ultima volta, altrimenti si crea
+# (stessa chiave primaria) si incrementa count e si allargano prima e
+# ultima volta
 _UPSERT = """
 INSERT INTO observations (vm_mac, direction, protocol, service_port,
                           icmp_type, remote_ip, verdict, vm_ip, count,
